@@ -1,0 +1,392 @@
+Great first session outcome. For the next 4 hours, the goal should be:
+
+```text
+Move from “one turtle doing built-in commands”
+to
+“small organized mining fleet with repeatable operations”
+```
+
+Not full automation yet. You should end session 2 with:
+
+```text
+- 2-3 labeled turtles
+- one proper mining dock
+- standardized fuel/output handling
+- repeatable tunnel pattern at depth -14
+- first tiny helper script, optional but useful
+- material flow into your base/machine setup
+```
+
+---
+
+# Session 2 plan: next 4 hours
+
+## 0:00-0:30 - Consolidate and sort
+
+Before crafting more turtles, clean up the result of session 1.
+
+Actions:
+
+```text
+[ ] Empty all turtle/chest inventories
+[ ] Sort ores, gems, redstone, coal, cobble/deepslate
+[ ] Keep one dedicated TURTLE FUEL chest
+[ ] Keep one dedicated TURTLE OUTPUT chest
+[ ] Keep one dedicated TURTLE PARTS chest
+[ ] Smelt/craft materials for 2 more turtles
+```
+
+Use this storage split:
+
+```text
+RAW ORES
+PROCESSED INGOTS
+COAL / FUEL
+REDSTONE / TECH PARTS
+TURTLES / COMPUTERCRAFT
+MEKANISM PARTS
+BUILDING BLOCKS
+```
+
+Do this first. Otherwise the next two hours turn into inventory soup.
+
+---
+
+## 0:30-1:00 - Create and label the turtle fleet
+
+Craft the new turtles, then label them immediately.
+
+Suggested names:
+
+```text
+miner-01
+miner-02
+miner-03
+```
+
+On each turtle:
+
+```lua
+label set miner-01
+```
+
+Then:
+
+```lua
+id
+label get
+```
+
+Role assignment:
+
+```text
+miner-01: proven worker, continues tunnel jobs
+miner-02: second tunnel worker
+miner-03: reserve / testing / future custom scripting turtle
+```
+
+Do **not** send all three away immediately. Keep one turtle safe for experiments.
+
+---
+
+## 1:00-1:30 - Build a proper mining dock
+
+Your first dock can now become a small mining outpost.
+
+At depth `-14`, make a base chamber:
+
+```text
+Side/top concept:
+
+                Main tunnel direction
+                         ^
+                         |
+                   [launch line]
+                         |
+[Fuel Chest] [Output Chest] [Sign/Board] [Spare Tools]
+                         |
+                  [Turtle Parking]
+```
+
+Better physical layout:
+
+```text
+Top view at Y -14:
+
+################################################
+#                                              #
+#  [Fuel] [Output] [Parts] [Cobble Trash]      #
+#                                              #
+#  miner-01 dock -> North Tunnel               #
+#  miner-02 dock -> East Tunnel                #
+#  miner-03 dock -> Reserved / Testing         #
+#                                              #
+################################################
+```
+
+Put signs with exact commands:
+
+```text
+miner-01:
+tunnel 150
+
+miner-02:
+tunnel 150
+
+Rule:
+Return, unload, refuel, repeat.
+```
+
+The important part is psychological: every turtle has a “home parking spot”.
+
+---
+
+## 1:30-2:30 - Run controlled parallel tunnels
+
+Now run two turtles in parallel, but with spacing.
+
+Do not start them directly next to each other. Give them room.
+
+Recommended pattern:
+
+```text
+Main corridor
+     |
+     +-- tunnel A: miner-01, tunnel 150
+     |
+  8-12 blocks spacing
+     |
+     +-- tunnel B: miner-02, tunnel 150
+```
+
+Example:
+
+```text
+Top view:
+
+Main corridor
+|
++---- miner-01 tunnel 150
+|
+|  10 blocks
+|
++---- miner-02 tunnel 150
+```
+
+Why 8-12 blocks?
+
+```text
+- avoids overlapping tunnels
+- keeps exploration clean
+- easier to mark
+- easier to recover turtles
+- enough separation to expose useful ore/caves
+```
+
+Operational loop:
+
+```text
+[ ] Put coal into turtle
+[ ] Check fuel
+[ ] Start tunnel 150
+[ ] While it runs, process/sort previous output
+[ ] When it returns, unload
+[ ] Refuel
+[ ] Repeat or move to next branch
+```
+
+Do not over-optimize yet. Your real gain comes from running **two boring reliable turtles**.
+
+---
+
+## 2:30-3:00 - Make your first tiny helper script
+
+Since you have not custom-scripted yet, start with something harmless: a status script.
+
+Create on each turtle:
+
+```lua
+edit status
+```
+
+Paste:
+
+```lua
+print("Label: " .. os.getComputerLabel())
+print("ID: " .. os.getComputerID())
+print("Fuel: " .. turtle.getFuelLevel() .. " / " .. turtle.getFuelLimit())
+
+local used = 0
+
+for slot = 1, 16 do
+  local count = turtle.getItemCount(slot)
+  if count > 0 then
+    used = used + 1
+    local detail = turtle.getItemDetail(slot)
+    local name = detail and detail.name or "unknown"
+    print("Slot " .. slot .. ": " .. count .. "x " .. name)
+  end
+end
+
+print("Used slots: " .. used .. " / 16")
+```
+
+Run:
+
+```lua
+status
+```
+
+This is a good first script because:
+
+```text
+- it cannot lose the turtle
+- it cannot move the turtle
+- it teaches reading turtle state
+- it helps before and after every mining run
+```
+
+Optional second helper:
+
+```lua
+edit fuelall
+```
+
+```lua
+for slot = 1, 16 do
+  turtle.select(slot)
+  turtle.refuel()
+end
+
+turtle.select(1)
+print("Fuel: " .. turtle.getFuelLevel() .. " / " .. turtle.getFuelLimit())
+```
+
+Use it only when you intentionally put fuel in the turtle inventory.
+
+---
+
+## 3:00-3:30 - Standardize the mining protocol
+
+Write this on an in-game sign or keep it next to you:
+
+```text
+Turtle mining protocol:
+
+1. Place turtle at marked dock.
+2. Confirm direction.
+3. Add coal.
+4. Run status.
+5. Run tunnel 150.
+6. Wait for return.
+7. Empty inventory.
+8. Refuel if needed.
+9. Mark tunnel complete.
+```
+
+For each finished tunnel, mark it:
+
+```text
+Tunnel A1 - complete
+Tunnel A2 - complete
+Tunnel B1 - complete
+```
+
+Good branch naming:
+
+```text
+A1, A2, A3 = north-side branches
+B1, B2, B3 = east-side branches
+C1, C2, C3 = future lower level
+```
+
+This sounds silly, but once you have 3 turtles running, names prevent confusion.
+
+---
+
+## 3:30-4:00 - Decide the next infrastructure step
+
+Use the last 30 minutes to prepare the jump from mining to machines.
+
+Pick one of these two paths depending on resources.
+
+## Path A: More mining throughput
+
+Do this if you are still short on redstone, diamonds, osmium, gold, or coal.
+
+```text
+[ ] Prepare 4 more branch tunnel launch points
+[ ] Put signs for A3, A4, B3, B4
+[ ] Preload fuel into turtles
+[ ] Keep miner-03 as emergency/recovery turtle
+```
+
+End state:
+
+```text
+You can start session 3 by immediately running tunnels.
+```
+
+## Path B: Start machine processing
+
+Do this if you have enough materials for Mekanism basics.
+
+```text
+[ ] Build or expand power generation
+[ ] Build Metallurgic Infuser if not already built
+[ ] Build Enrichment Chamber if possible
+[ ] Create Raw Ore input chest
+[ ] Create Processed Output chest
+[ ] Route mined material manually into processing
+```
+
+End state:
+
+```text
+Turtles create raw material.
+Mekanism starts multiplying/processing it.
+```
+
+For your autoscaling dream, Path B is the better long-term step. But if resources are still thin, Path A is fine.
+
+---
+
+# Recommended exact outcome for session 2
+
+I would aim for this:
+
+```text
+[ ] 3 turtles crafted total
+[ ] miner-01, miner-02, miner-03 labeled
+[ ] status script installed on all turtles
+[ ] fuelall script installed on all turtles
+[ ] mining dock at Y -14 built
+[ ] 2 more tunnel 150 runs completed
+[ ] one reserve turtle kept safe
+[ ] output sorted
+[ ] first Mekanism processing lane started or expanded
+```
+
+---
+
+# Avoid this in session 2
+
+```text
+Do not run three turtles blindly in different directions.
+Do not start GPS yet.
+Do not start rednet command/control yet.
+Do not write a custom excavator yet.
+Do not mine so far that recovery becomes annoying.
+Do not let fuel/output handling stay informal.
+```
+
+The big win now is not clever scripting. It is **operational discipline**.
+
+You want this loop to become boring:
+
+```text
+dock -> fuel -> status -> tunnel -> unload -> sort -> repeat
+```
+
+Once that loop is reliable with 2-3 turtles, custom scripts become much easier and much safer.
+
