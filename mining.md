@@ -9,10 +9,10 @@ to managed-area scheduling.
 Mining does not own the AO safety model. Turtles should execute mining behavior
 through the turtle-local AO runtime once custom movement is introduced.
 
-## Current Goal
+## Current Standalone Programs
 
-The current standalone mining topic starts with a small wrapper around the stock
-CC:Tweaked `tunnel` program.
+The standalone mining topic starts with a small wrapper around the stock
+CC:Tweaked `tunnel` program and then moves to a custom fixed-dock miner.
 
 v0 is `preflight`:
 
@@ -37,6 +37,23 @@ tunnel <distance>
 
 v0 turns in place to check rear output storage. It does not unload or return.
 The turtle stays wherever the stock `tunnel` program leaves it.
+
+v1 standalone is `dockmine`:
+
+```lua
+dockmine 8
+dockmine 32
+dockmine
+```
+
+It mines a 1-wide, 2-high straight tunnel from a fixed dock. It saves progress
+in `.dockmine_progress`, returns to the dock when inventory fills or fuel reaches
+the return threshold, unloads into the output chest behind the turtle, refuels
+from the fuel chest below the turtle, and resumes from the saved tunnel face.
+
+Use `dockmine 8` first on each turtle. Run without a limit only after the dock,
+rear output chest, below fuel chest, unloading, refuelling, and return behavior
+are confirmed.
 
 ## Standalone Turtle
 
@@ -113,12 +130,35 @@ that verifies or unloads into the rear chest must turn around first.
 v0 does the smallest safe version of this: turn around, inspect for a
 chest/barrel, turn back to the tunnel direction.
 
+`dockmine` uses the same rear-output assumption and also expects a fuel
+chest/barrel directly below the turtle:
+
+```text
+Top view:
+
+[output chest] [turtle -> tunnel direction]
+
+Side view:
+
+       tunnel direction
+             ^
+             |
+        [turtle]
+             |
+      [fuel chest below]
+```
+
+For the four-cardinal dock setup, each turtle owns one direction, one output
+chest behind it, one fuel chest below it, and one local `.dockmine_progress`
+file.
+
 ## Program Files
 
 Create each mining-related program in-game:
 
 ```lua
 edit preflight
+edit dockmine
 edit junk_policy
 edit junkscan
 ```
@@ -186,10 +226,21 @@ v0:
 
 v1:
 
-- custom tunnel or lane control
+- `dockmine` fixed-dock straight tunnel control
 - return to starting position when the job is finished
-- use junk policy when inventory is full
-- execute through turtle-local AO guards
+- unload into the rear output chest
+- refuel from the chest below the turtle
+- save progress in `.dockmine_progress`
+
+not v1:
+
+- shared tunnel coordination
+- collision logic
+- central controller
+- moving the dock forward
+- side-branch mining
+- wireless status reporting
+- executing through turtle-local AO guards
 
 v1.1:
 

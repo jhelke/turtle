@@ -2,10 +2,13 @@
 
 ## Responsibility Stack
 
-This project is moving from one turtle running local scripts toward a layered
-automation system.
+Reminder map for the layered turtle automation project. Details live in the
+linked topic files.
 
 ```text
+architecture.md
+- core terms, authority rule, and layer boundaries
+
 command_center.md
 - user intent
 - global routing
@@ -29,6 +32,19 @@ mining.md
 - standalone vs managed-area mining behavior
 - junk policy and tunnel assumptions
 
+storage.md
+- storage philosophy and roadmap
+- Refined Storage boundary
+- v1/v2/end-game responsibility split
+
+storage_taxonomy_v1.md
+- canonical manual chest taxonomy
+- label format and category paths
+
+storage_system_v1.md
+- intake, routing, overflow, and index scanner behavior
+- searchable visibility without retrieval
+
 area_of_operations.md
 - turtle-local safety envelope
 - AO-scoped turtle API
@@ -39,37 +55,26 @@ lua_cc_tweaked_quickstart.md
 - Lua syntax basics
 - CC:Tweaked turtle API basics
 - simple local helper programs
+
+turtle_wget_runbook.md
+- check wget and HTTP access on turtles
+- fetch dockmine as a local program
+- run and reset dockmine safely
+
+lua_runtime.md
+- CC:Tweaked Lua runtime version
+- type system and execution guarantees
+- Lua 5.2/5.3 compatibility notes
 ```
 
 ## Core Terms
 
-`request`:
-High-level user or system intent, such as "mine more osmium".
+`request`: high-level user or system intent.
 
-`managed_area`:
-A local responsibility boundary controlled by a local computer. It manages local
-resources such as turtles, docks, chests, machines, peripherals, and job queues.
+`managed_area`: local computer plus local resources and worker scheduling.
 
-`job`:
-A bounded unit of work assigned to one worker. For mining, prefer one lane per
-job instead of one giant mining campaign.
+`job`: bounded unit of work assigned to one worker.
 
-`task`:
-Executable behavior type, such as `mine-lane`, `unload`, or `refuel`.
+`task`: executable behavior type, such as `mine-lane`, `unload`, or `refuel`.
 
-`turtle_ao`:
-The turtle-local Area of Operations. It is enforced on the turtle and prevents
-unsafe physical actions even if higher layers send bad jobs.
-
-## Authority Rule
-
-Higher layers request outcomes. Lower layers enforce safety.
-
-```text
-command center -> managed area request
-managed area -> turtle job
-turtle -> AO-guarded local actions
-```
-
-Avoid designs where a command center or area computer sends raw movement
-commands such as `forward` or `dig` to a turtle.
+`turtle_ao`: turtle-local safety envelope enforced before physical actions.
