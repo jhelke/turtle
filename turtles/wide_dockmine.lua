@@ -288,6 +288,24 @@ local function clearForward()
   return true
 end
 
+local function clearUp()
+  local attempts = 0
+
+  while turtle.detectUp() do
+    turtle.digUp()
+    sleep(0.2)
+
+    attempts = attempts + 1
+
+    if attempts > 20 then
+      print("Could not clear upper side-step block.")
+      return false
+    end
+  end
+
+  return true
+end
+
 local function forwardRobust()
   for attempt = 1, 5 do
     local ok, reason = turtle.forward()
@@ -315,7 +333,7 @@ local function stepSide(direction)
     turtle.turnLeft()
   end
 
-  local ok = clearForward() and forwardRobust()
+  local ok = clearForward() and forwardRobust() and clearUp()
 
   if direction == "right" then
     turtle.turnLeft()
