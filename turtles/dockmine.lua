@@ -60,6 +60,11 @@ local function isLikelyInventoryBlock(blockName)
       or string.find(blockName, "barrel") ~= nil)
 end
 
+local function isProtectedBlock(blockName)
+  return type(blockName) == "string"
+    and string.find(blockName, "torch", 1, true) ~= nil
+end
+
 local function readProgress()
   if not fs.exists(stateFile) then
     return 0
@@ -242,6 +247,14 @@ local function clearForward()
   local attempts = 0
 
   while turtle.detect() do
+    local found, detail = turtle.inspect()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected block in front: " .. blockName)
+      return false
+    end
+
     turtle.dig()
     sleep(0.2)
 
@@ -260,6 +273,14 @@ local function clearUp()
   local attempts = 0
 
   while turtle.detectUp() do
+    local found, detail = turtle.inspectUp()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected block above: " .. blockName)
+      return false
+    end
+
     turtle.digUp()
     sleep(0.2)
 
@@ -283,6 +304,15 @@ local function forwardRobust()
     end
 
     turtle.attack()
+
+    local found, detail = turtle.inspect()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected block in front: " .. blockName)
+      return false
+    end
+
     turtle.dig()
     sleep(0.3)
 
