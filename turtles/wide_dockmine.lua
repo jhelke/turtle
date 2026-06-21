@@ -1,13 +1,15 @@
 -- Wide dock tunnel miner wrapper.
 -- Usage:
---   wide_dockmine <depth> <width> [right|left] [fuel-margin]
---   wide_dockmine <depth> <width> [fuel-margin]
+--   wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>]
+--   wide_dockmine <depth> <width> [fuel-margin] [offset <lanes>]
 --
 -- Examples:
 --   wide_dockmine 32 3
 --   wide_dockmine 64 5 left
 --   wide_dockmine 64 5 right 48
 --   wide_dockmine 64 5 48
+--   wide_dockmine 64 3 right 48 offset 2
+--   wide_dockmine 64 3 right offset=2
 --
 -- Dock assumptions:
 -- - dockmine.lua is installed next to this script, or available as dockmine.
@@ -23,15 +25,20 @@ local depth = tonumber(args[1])
 local width = tonumber(args[2])
 local side = "right"
 local margin = 32
+local offset = 0
 local argError = nil
 
 local function usage()
-  print("Usage: wide_dockmine <depth> <width> [right|left] [fuel-margin]")
-  print("   or: wide_dockmine <depth> <width> [fuel-margin]")
+  print("Usage: wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>]")
+  print("   or: wide_dockmine <depth> <width> [fuel-margin] [offset <lanes>]")
 end
 
 local function isPositiveWholeNumber(value)
   return value and value >= 1 and value == math.floor(value)
+end
+
+local function isNonNegativeWholeNumber(value)
+  return value and value >= 0 and value == math.floor(value)
 end
 
 local function turnAround()
@@ -255,10 +262,10 @@ local function fuelNeededForCurrentLaneOnly()
   return depth * 2 + margin
 end
 
-local function fuelNeededFromCurrentLane(lane)
-  local lanesRemaining = width - lane + 1
+local function fuelNeededFromRun(run)
+  local lanesRemaining = width - run + 1
   local sideStepsRemaining = lanesRemaining - 1
-  local sideStepsBackToDockLane = width - lane
+  local sideStepsBackToDockLane = offset + width - 1
 
   return lanesRemaining * depth * 2
     + sideStepsRemaining
@@ -266,8 +273,12 @@ local function fuelNeededFromCurrentLane(lane)
     + margin
 end
 
-local function fuelNeededBeforeSideStep(nextLane)
-  return 1 + fuelNeededFromCurrentLane(nextLane)
+local function fuelNeededBeforeSideStep(nextRun)
+  return 1 + fuelNeededFromRun(nextRun)
+end
+
+local function fuelNeededBeforeInitialOffset()
+  return offset + fuelNeededFromRun(1)
 end
 
 local function clearForward()
@@ -344,6 +355,19 @@ local function stepSide(direction)
   return ok
 end
 
+local function moveSideSteps(direction, count, label)
+  for step = 1, count do
+    print(label .. ": " .. step .. "/" .. count)
+
+    if not stepSide(direction) then
+      print("Could not complete side-step " .. step .. "/" .. count .. ".")
+      return false
+    end
+  end
+
+  return true
+end
+
 local function oppositeSide(direction)
   if direction == "right" then
     return "left"
@@ -352,19 +376,10 @@ local function oppositeSide(direction)
   return "right"
 end
 
-local function returnToDockLane()
+local function returnToDockLane(distance)
   local returnSide = oppositeSide(side)
 
-  for offset = width - 1, 1, -1 do
-    print("Returning " .. returnSide .. " toward dock lane")
-
-    if not stepSide(returnSide) then
-      print("Could not return to dock lane from offset " .. offset .. ".")
-      return false
-    end
-  end
-
-  return true
+  return moveSideSteps(returnSide, distance, "Returning " .. returnSide .. " toward dock lane")
 end
 
 local function resolveDockmine()
@@ -400,9 +415,9 @@ local function resolveDockmine()
   return nil
 end
 
-local function runDockmine(program, lane)
+local function runDockmine(program, lane, run)
   print("")
-  print("Starting lane " .. lane .. "/" .. width)
+  print("Starting lane " .. lane .. " (" .. run .. "/" .. width .. ")")
   print("Lane depth: " .. depth)
 
   local chunk, loadErr = loadfile(program)
@@ -427,26 +442,61 @@ local function runDockmine(program, lane)
   return true
 end
 
-if args[3] == "right" or args[3] == "left" then
-  side = args[3]
+local seenSide = false
+local seenMargin = false
+local seenOffset = false
+local argIndex = 3
 
-  if args[4] then
-    margin = tonumber(args[4])
+while args[argIndex] do
+  local arg = args[argIndex]
 
-    if not margin then
-      argError = "fuel-margin must be a non-negative whole number."
+  if arg == "right" or arg == "left" then
+    if seenSide then
+      argError = "side can only be set once."
+      break
+    end
+
+    side = arg
+    seenSide = true
+    argIndex = argIndex + 1
+  elseif arg == "offset" then
+    if seenOffset then
+      argError = "offset can only be set once."
+      break
+    end
+
+    if not args[argIndex + 1] then
+      argError = "offset requires a lane count."
+      break
+    end
+
+    offset = tonumber(args[argIndex + 1])
+    seenOffset = true
+    argIndex = argIndex + 2
+  elseif string.sub(arg, 1, 7) == "offset=" then
+    if seenOffset then
+      argError = "offset can only be set once."
+      break
+    end
+
+    offset = tonumber(string.sub(arg, 8))
+    seenOffset = true
+    argIndex = argIndex + 1
+  else
+    local number = tonumber(arg)
+
+    if number and not seenMargin then
+      margin = number
+      seenMargin = true
+      argIndex = argIndex + 1
+    elseif number then
+      argError = "extra number must use offset <lanes> or offset=<lanes>."
+      break
+    else
+      argError = "unknown argument: " .. tostring(arg)
+      break
     end
   end
-elseif args[3] then
-  margin = tonumber(args[3])
-
-  if not margin then
-    argError = "third argument must be right, left, or a fuel margin."
-  end
-end
-
-if args[5] then
-  argError = "too many arguments."
 end
 
 if not isPositiveWholeNumber(depth) or not isPositiveWholeNumber(width) then
@@ -467,6 +517,12 @@ if margin < 0 or margin ~= math.floor(margin) then
   return false
 end
 
+if not isNonNegativeWholeNumber(offset) then
+  usage()
+  print("offset must be a non-negative whole number.")
+  return false
+end
+
 local dockmineProgram = resolveDockmine()
 
 if not dockmineProgram then
@@ -477,6 +533,7 @@ end
 print("wide_dockmine starting")
 print("Depth: " .. depth)
 print("Width: " .. width)
+print("Offset: " .. offset)
 print("Side-step: " .. side)
 print("Margin: " .. margin)
 print("dockmine: " .. dockmineProgram)
@@ -486,66 +543,76 @@ if not serviceDock() then
   return false
 end
 
-if not ensureFuel(fuelNeededForCurrentLaneOnly(), "for lane 1") then
-  return false
-end
-
-if not ensureInventoryReady(1) then
-  return false
-end
-
-if not runDockmine(dockmineProgram, 1) then
-  print("Stopping at lane 1.")
-  return false
-end
-
-if width > 1 then
-  if not serviceDock() then
-    print("Could not prepare the dock before leaving for wider lanes.")
+if offset == 0 then
+  if not ensureFuel(fuelNeededForCurrentLaneOnly(), "for lane 1") then
+    return false
+  end
+else
+  if not ensureFuel(fuelNeededBeforeInitialOffset(), "for offset and new lanes") then
     return false
   end
 
-  if not ensureFuel(fuelNeededBeforeSideStep(2), "for remaining lanes") then
+  print("Skipping " .. offset .. " previously mined lanes " .. side)
+
+  if not moveSideSteps(side, offset, "Moving " .. side .. " through mined lanes") then
     return false
   end
 end
 
-for lane = 2, width do
-  if not ensureInventoryReady(lane) then
-    return false
-  end
+for run = 1, width do
+  local lane = offset + run
 
-  if not ensureFuel(fuelNeededBeforeSideStep(lane), "before moving to lane " .. lane) then
-    return false
-  end
-
-  print("Moving " .. side .. " to lane " .. lane)
-
-  if not stepSide(side) then
-    print("Could not move to lane " .. lane .. ".")
-    return false
-  end
-
-  if not ensureFuel(fuelNeededFromCurrentLane(lane), "from lane " .. lane) then
-    return false
+  if run > 1 or offset > 0 then
+    if not ensureFuel(fuelNeededFromRun(run), "from lane " .. lane) then
+      return false
+    end
   end
 
   if not ensureInventoryReady(lane) then
     return false
   end
 
-  if not runDockmine(dockmineProgram, lane) then
+  if not runDockmine(dockmineProgram, lane, run) then
     print("Stopping at lane " .. lane .. ".")
     return false
   end
+
+  if offset == 0 and run == 1 and width > 1 then
+    if not serviceDock() then
+      print("Could not prepare the dock before leaving for wider lanes.")
+      return false
+    end
+  end
+
+  if run < width then
+    local nextRun = run + 1
+    local nextLane = offset + nextRun
+
+    if not ensureInventoryReady(nextLane) then
+      return false
+    end
+
+    if not ensureFuel(fuelNeededBeforeSideStep(nextRun), "before moving to lane " .. nextLane) then
+      return false
+    end
+
+    print("Moving " .. side .. " to lane " .. nextLane)
+
+    if not stepSide(side) then
+      print("Could not move to lane " .. nextLane .. ".")
+      return false
+    end
+  end
 end
 
-if width > 1 then
-  if not ensureFuel(width - 1, "to return to the dock lane") then
+local returnDistance = offset + width - 1
+
+if returnDistance > 0 then
+  if not ensureFuel(returnDistance, "to return to the dock lane") then
     return false
   end
 
-  if not returnToDockLane() then
+  if not returnToDockLane(returnDistance) then
     return false
   end
 end
