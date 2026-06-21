@@ -258,8 +258,12 @@ end
 local function fuelNeededFromCurrentLane(lane)
   local lanesRemaining = width - lane + 1
   local sideStepsRemaining = lanesRemaining - 1
+  local sideStepsBackToDockLane = width - lane
 
-  return lanesRemaining * depth * 2 + sideStepsRemaining + margin
+  return lanesRemaining * depth * 2
+    + sideStepsRemaining
+    + sideStepsBackToDockLane
+    + margin
 end
 
 local function fuelNeededBeforeSideStep(nextLane)
@@ -320,6 +324,29 @@ local function stepSide(direction)
   end
 
   return ok
+end
+
+local function oppositeSide(direction)
+  if direction == "right" then
+    return "left"
+  end
+
+  return "right"
+end
+
+local function returnToDockLane()
+  local returnSide = oppositeSide(side)
+
+  for offset = width - 1, 1, -1 do
+    print("Returning " .. returnSide .. " toward dock lane")
+
+    if not stepSide(returnSide) then
+      print("Could not return to dock lane from offset " .. offset .. ".")
+      return false
+    end
+  end
+
+  return true
 end
 
 local function resolveDockmine()
@@ -491,6 +518,16 @@ for lane = 2, width do
 
   if not runDockmine(dockmineProgram, lane) then
     print("Stopping at lane " .. lane .. ".")
+    return false
+  end
+end
+
+if width > 1 then
+  if not ensureFuel(width - 1, "to return to the dock lane") then
+    return false
+  end
+
+  if not returnToDockLane() then
     return false
   end
 end
