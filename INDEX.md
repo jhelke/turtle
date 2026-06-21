@@ -10,7 +10,7 @@ architecture.md
 - core terms, authority rule, and layer boundaries
 
 command_center.md
-- user intent
+- player_request intake
 - global routing
 - cross-area coordination
 - no direct turtle movement authority
@@ -23,7 +23,7 @@ managed_area.md
 
 protocol.md
 - shared message formats
-- request, job, status, and error schemas
+- inter-system request, job, status, and error schemas
 - contracts between command center, managed areas, and turtles
 
 mining.md
@@ -69,7 +69,7 @@ lua_runtime.md
 
 ## Core Terms
 
-`request`: high-level user or system intent.
+`player_request`: player-submitted request for an outcome.
 
 `managed_area`: local computer plus local resources and worker scheduling.
 
