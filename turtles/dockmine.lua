@@ -2,6 +2,8 @@
 -- Usage:
 --   dockmine 8
 --   dockmine 32
+--   dockmine 32 script
+--   dockmine 32 48 script
 --   dockmine
 --
 -- Dock assumptions:
@@ -9,6 +11,9 @@
 -- - Output chest/barrel is directly behind the turtle.
 -- - Fuel chest/barrel is directly below the turtle.
 -- - The script owns .dockmine_progress on this turtle.
+-- - Script mode is a caller-owned primitive: it performs only movement and
+--   block mining/placing work. It does not use dock service, progress state,
+--   fuel policy, or inventory policy.
 --
 -- The tunnel shape is 1 wide x 2 high. This is not the same shape as the
 -- stock CC:Tweaked tunnel program.
@@ -16,8 +21,10 @@
 -- GLOBALS
 
 local args = { ... }
-local maxNewBlocks = tonumber(args[1])
-local margin = tonumber(args[2]) or 32
+local maxNewBlocks = nil
+local margin = 32
+local scriptMode = false
+local argError = nil
 local stateFile = ".dockmine_progress"
 
 local function turnAround()
@@ -348,19 +355,117 @@ local function mineOneStep()
   return true, true
 end
 
-if args[1] and not maxNewBlocks then
-  print("Usage: dockmine [max-new-blocks] [fuel-margin]")
+local function runScriptMode(depth)
+  local moved = 0
+
+  print("dockmine script mode starting")
+  print("Depth: " .. depth)
+  print("Fuel: " .. tostring(turtle.getFuelLevel()))
+
+  for step = 1, depth do
+    local stepOk, didMove = mineOneStep()
+
+    if didMove then
+      moved = moved + 1
+    end
+
+    if not stepOk then
+      print("Script mode failed at step " .. step .. ".")
+
+      if moved > 0 then
+        if not returnHome(moved) then
+          print("Could not return to script start. Manual rescue needed.")
+          return false
+        end
+      end
+
+      return false
+    end
+
+    if step % 16 == 0 then
+      print("Script mode mined blocks: " .. step)
+      print("Fuel: " .. tostring(turtle.getFuelLevel()))
+    end
+  end
+
+  if not returnHome(moved) then
+    print("Could not return to script start. Manual rescue needed.")
+    return false
+  end
+
+  print("dockmine script mode complete")
+  return true
+end
+
+local function isScriptModeArg(value)
+  return value == "script"
+    or value == "--script"
+    or value == "--script-mode"
+    or value == "--skip-dock-checks"
+end
+
+local function usage()
+  print("Usage: dockmine [max-new-blocks] [fuel-margin] [script]")
+end
+
+if args[1] then
+  maxNewBlocks = tonumber(args[1])
+
+  if not maxNewBlocks then
+    argError = "max-new-blocks must be a positive whole number."
+  end
+end
+
+if args[2] then
+  if isScriptModeArg(args[2]) then
+    scriptMode = true
+  else
+    margin = tonumber(args[2])
+
+    if not margin then
+      argError = "fuel-margin must be a non-negative whole number."
+    end
+  end
+end
+
+if args[3] then
+  if isScriptModeArg(args[3]) then
+    scriptMode = true
+  else
+    argError = "third argument must be script mode."
+  end
+end
+
+if args[4] then
+  argError = "too many arguments."
+end
+
+if argError then
+  usage()
+  print(argError)
   return false
 end
 
 if maxNewBlocks and (maxNewBlocks < 1 or maxNewBlocks ~= math.floor(maxNewBlocks)) then
+  usage()
   print("max-new-blocks must be a positive whole number.")
   return false
 end
 
 if margin < 0 or margin ~= math.floor(margin) then
+  usage()
   print("fuel-margin must be a non-negative whole number.")
   return false
+end
+
+if scriptMode and not maxNewBlocks then
+  usage()
+  print("script mode requires max-new-blocks.")
+  return false
+end
+
+if scriptMode then
+  return runScriptMode(maxNewBlocks)
 end
 
 -- EXECUTION CODE

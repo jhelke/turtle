@@ -12,9 +12,10 @@
 -- Dock assumptions:
 -- - dockmine.lua is installed next to this script, or available as dockmine.
 -- - Turtle starts at the first lane dock, facing the tunnel direction.
--- - Each lane dock has an output chest/barrel behind the turtle.
--- - Each lane dock has a fuel chest/barrel directly below the turtle.
--- - The script owns .dockmine_progress while it is running.
+-- - The first lane dock has an output chest/barrel behind the turtle.
+-- - The first lane dock has a fuel chest/barrel directly below the turtle.
+-- - This wrapper owns dock service, fuel policy, and inventory policy.
+-- - dockmine.lua is called only in script mode as a movement/mining primitive.
 
 local args = { ... }
 
@@ -23,7 +24,6 @@ local width = tonumber(args[2])
 local side = "right"
 local margin = 32
 local argError = nil
-local stateFile = ".dockmine_progress"
 
 local function usage()
   print("Usage: wide_dockmine <depth> <width> [right|left] [fuel-margin]")
@@ -32,6 +32,238 @@ end
 
 local function isPositiveWholeNumber(value)
   return value and value >= 1 and value == math.floor(value)
+end
+
+local function turnAround()
+  turtle.turnLeft()
+  turtle.turnLeft()
+end
+
+local function fuelLevel()
+  local level = turtle.getFuelLevel()
+
+  if level == "unlimited" then
+    return math.huge
+  end
+
+  return level
+end
+
+local function fuelLimit()
+  local limit = turtle.getFuelLimit()
+
+  if limit == "unlimited" then
+    return math.huge
+  end
+
+  return limit
+end
+
+local function isLikelyInventoryBlock(blockName)
+  return type(blockName) == "string"
+    and (string.find(blockName, "chest") ~= nil
+      or string.find(blockName, "barrel") ~= nil)
+end
+
+local function emptySlotCount()
+  local count = 0
+
+  for slot = 1, 16 do
+    if turtle.getItemCount(slot) == 0 then
+      count = count + 1
+    end
+  end
+
+  return count
+end
+
+local function findEmptySlot()
+  for slot = 1, 16 do
+    if turtle.getItemCount(slot) == 0 then
+      return slot
+    end
+  end
+
+  return nil
+end
+
+local function refuelFromInventory()
+  if turtle.getFuelLevel() == "unlimited" then
+    return
+  end
+
+  local previousSlot = turtle.getSelectedSlot()
+
+  for slot = 1, 16 do
+    turtle.select(slot)
+    turtle.refuel()
+  end
+
+  turtle.select(previousSlot)
+end
+
+local function checkFuelChestBelow()
+  local found, detail = turtle.inspectDown()
+  local blockName = found and detail and detail.name or ""
+
+  if not found then
+    return false, "no fuel chest below turtle"
+  end
+
+  if not isLikelyInventoryBlock(blockName) then
+    return false, "block below is " .. blockName .. ", not a chest/barrel"
+  end
+
+  return true, blockName
+end
+
+local function refuelFromChestBelow()
+  if turtle.getFuelLevel() == "unlimited" then
+    return true
+  end
+
+  local chestOk, chestMessage = checkFuelChestBelow()
+
+  if not chestOk then
+    print("Fuel chest check failed: " .. chestMessage)
+    return false
+  end
+
+  refuelFromInventory()
+
+  while fuelLevel() < fuelLimit() do
+    local freeSlot = findEmptySlot()
+
+    if not freeSlot then
+      return true
+    end
+
+    turtle.select(freeSlot)
+
+    local ok = turtle.suckDown(1)
+
+    if not ok then
+      break
+    end
+
+    local isFuel = turtle.refuel(0)
+
+    if isFuel then
+      turtle.refuel(1)
+    else
+      turtle.dropDown()
+      print("Non-fuel item in fuel chest below.")
+      break
+    end
+  end
+
+  turtle.select(1)
+  return true
+end
+
+local function checkOutputBehind()
+  turnAround()
+
+  local found, detail = turtle.inspect()
+  local blockName = found and detail and detail.name or ""
+
+  turnAround()
+
+  if not found then
+    return false, "no output chest behind turtle"
+  end
+
+  if not isLikelyInventoryBlock(blockName) then
+    return false, "rear block is " .. blockName .. ", not a chest/barrel"
+  end
+
+  return true, blockName
+end
+
+local function unloadBehind()
+  local outputOk, outputMessage = checkOutputBehind()
+
+  if not outputOk then
+    print("Output chest check failed: " .. outputMessage)
+    return false
+  end
+
+  refuelFromInventory()
+  turnAround()
+
+  local allUnloaded = true
+  local previousSlot = turtle.getSelectedSlot()
+
+  for slot = 1, 16 do
+    turtle.select(slot)
+
+    if turtle.getItemCount(slot) > 0 then
+      turtle.drop()
+
+      if turtle.getItemCount(slot) > 0 then
+        allUnloaded = false
+      end
+    end
+  end
+
+  turtle.select(previousSlot)
+  turnAround()
+
+  return allUnloaded
+end
+
+local function serviceDock()
+  print("Servicing first-lane dock.")
+
+  if not unloadBehind() then
+    print("Output chest is full, missing, or blocked.")
+    return false
+  end
+
+  if not refuelFromChestBelow() then
+    print("Fuel chest is missing or invalid.")
+    return false
+  end
+
+  refuelFromInventory()
+  print("Fuel after dock service: " .. tostring(turtle.getFuelLevel()))
+
+  return true
+end
+
+local function ensureFuel(required, context)
+  if fuelLevel() >= required then
+    return true
+  end
+
+  print("Not enough fuel " .. context .. ".")
+  print("Fuel: " .. fuelLevel())
+  print("Needed: " .. required)
+  return false
+end
+
+local function ensureInventoryReady(lane)
+  if emptySlotCount() >= 2 then
+    return true
+  end
+
+  print("Inventory is full or near full before lane " .. lane .. ".")
+  return false
+end
+
+local function fuelNeededForCurrentLaneOnly()
+  return depth * 2 + margin
+end
+
+local function fuelNeededFromCurrentLane(lane)
+  local lanesRemaining = width - lane + 1
+  local sideStepsRemaining = lanesRemaining - 1
+
+  return lanesRemaining * depth * 2 + sideStepsRemaining + margin
+end
+
+local function fuelNeededBeforeSideStep(nextLane)
+  return 1 + fuelNeededFromCurrentLane(nextLane)
 end
 
 local function clearForward()
@@ -123,18 +355,10 @@ local function resolveDockmine()
   return nil
 end
 
-local function resetDockmineProgress()
-  if fs.exists(stateFile) then
-    fs.delete(stateFile)
-  end
-end
-
 local function runDockmine(program, lane)
   print("")
   print("Starting lane " .. lane .. "/" .. width)
   print("Lane depth: " .. depth)
-
-  resetDockmineProgress()
 
   local chunk, loadErr = loadfile(program)
 
@@ -143,7 +367,7 @@ local function runDockmine(program, lane)
     return false
   end
 
-  local ok, result = pcall(chunk, tostring(depth), tostring(margin))
+  local ok, result = pcall(chunk, tostring(depth), "script")
 
   if not ok then
     print("dockmine.lua crashed: " .. tostring(result))
@@ -212,23 +436,64 @@ print("Side-step: " .. side)
 print("Margin: " .. margin)
 print("dockmine: " .. dockmineProgram)
 
-for lane = 1, width do
+if not serviceDock() then
+  print("Could not prepare the first-lane dock.")
+  return false
+end
+
+if not ensureFuel(fuelNeededForCurrentLaneOnly(), "for lane 1") then
+  return false
+end
+
+if not ensureInventoryReady(1) then
+  return false
+end
+
+if not runDockmine(dockmineProgram, 1) then
+  print("Stopping at lane 1.")
+  return false
+end
+
+if width > 1 then
+  if not serviceDock() then
+    print("Could not prepare the dock before leaving for wider lanes.")
+    return false
+  end
+
+  if not ensureFuel(fuelNeededBeforeSideStep(2), "for remaining lanes") then
+    return false
+  end
+end
+
+for lane = 2, width do
+  if not ensureInventoryReady(lane) then
+    return false
+  end
+
+  if not ensureFuel(fuelNeededBeforeSideStep(lane), "before moving to lane " .. lane) then
+    return false
+  end
+
+  print("Moving " .. side .. " to lane " .. lane)
+
+  if not stepSide(side) then
+    print("Could not move to lane " .. lane .. ".")
+    return false
+  end
+
+  if not ensureFuel(fuelNeededFromCurrentLane(lane), "from lane " .. lane) then
+    return false
+  end
+
+  if not ensureInventoryReady(lane) then
+    return false
+  end
+
   if not runDockmine(dockmineProgram, lane) then
     print("Stopping at lane " .. lane .. ".")
     return false
   end
-
-  if lane < width then
-    print("Moving " .. side .. " to lane " .. (lane + 1))
-
-    if not stepSide(side) then
-      print("Could not move to lane " .. (lane + 1) .. ".")
-      return false
-    end
-  end
 end
-
-resetDockmineProgress()
 
 print("")
 print("wide_dockmine complete")

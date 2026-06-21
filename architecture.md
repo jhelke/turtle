@@ -5,8 +5,8 @@ automation system.
 
 ## Core Terms
 
-`request`:
-High-level user or system intent, such as "mine more osmium".
+`player_request`:
+A player-submitted request for an outcome, such as "mine more osmium".
 
 `managed_area`:
 A local responsibility boundary controlled by a local computer. It manages local
@@ -28,7 +28,7 @@ unsafe physical actions even if higher layers send bad jobs.
 Higher layers request outcomes. Lower layers enforce safety.
 
 ```text
-command center -> managed area request
+command center -> managed area player_request
 managed area -> turtle job
 turtle -> AO-guarded local actions
 ```
@@ -36,3 +36,7 @@ turtle -> AO-guarded local actions
 Avoid designs where a command center or area computer sends raw movement
 commands such as `forward` or `dig` to a turtle.
 
+When one script calls another script as a task primitive, the called script owns
+movement, block interaction, and task-local inventory mechanics required for
+that interaction. The caller owns resource policy, scheduling, persistence, and
+recovery.

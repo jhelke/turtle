@@ -55,6 +55,38 @@ Use `dockmine 8` first on each turtle. Run without a limit only after the dock,
 rear output chest, below fuel chest, unloading, refuelling, and return behavior
 are confirmed.
 
+## Mining Script Mode
+
+`dockmine` can also run as a task primitive for another script:
+
+```lua
+dockmine 32 script
+```
+
+Script mode follows the cross-task rule from `architecture.md`: the called
+script is responsible for movement, block interaction, and task-local inventory
+mechanics required for that interaction. For `dockmine`, that means mining a
+bounded 1-wide, 2-high lane and returning to the script start position.
+
+Task-local inventory mechanics include selecting required slots, consuming
+explicitly allowed blocks, restoring the selected slot when practical, and
+failing cleanly when required inventory is missing or full.
+
+The caller owns resource policy and orchestration:
+
+- dock checks
+- unloading
+- refuelling
+- fuel policy
+- inventory policy, such as junk rules and empty-slot thresholds
+- progress tracking
+- lane scheduling
+- retry and recovery behavior
+
+`wide_dockmine` uses this contract. It services the real dock, checks fuel and
+inventory, moves between lanes, and calls `dockmine <depth> script` for each
+bounded lane.
+
 ## Standalone Turtle
 
 Standalone mode means the operator directly starts a turtle program.
