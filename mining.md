@@ -128,6 +128,62 @@ The managed area should own lane alternation:
 The turtle should not own the whole campaign. It should execute one lane job and
 return a result.
 
+The first managed-area mining implementation is simpler than the later lane
+queue. It manages one or more fixed dock turtles and sends each enabled turtle
+one absolute target-distance job. Four cardinal docks are the scaling target,
+but one enabled dock is enough for the first managed-area session:
+
+```lua
+{
+  type = "job",
+  jobId = "mine_01-north-12345",
+  task = "mine-distance",
+  heading = "north",
+  turtleId = 21,
+  params = {
+    targetDistance = 150,
+    laneLength = 150,
+    laneOffset = 0,
+    laneWidth = 1,
+    laneHeight = 2,
+    fuelMargin = 32,
+  },
+}
+```
+
+Install these programs for this mode:
+
+```text
+managed-area computer:
+- computers/mining_area.lua as mining_area
+- computers/mining_area_config.example.lua copied and edited as mining_area_config
+
+each mining turtle:
+- turtles/dockmine.lua as dockmine
+- turtles/mining_worker.lua as mining_worker
+```
+
+Start `mining_worker` on each turtle, then run `mining_area <distance>` on the
+computer. The computer handles the modem-connected fuel/output/storage chests;
+the turtle still handles local movement, mining, unloading from its inventory,
+and refuelling from the dock fuel chest below it.
+
+Dock enrollment has two paths:
+
+```lua
+mining_area discover
+mining_area add-turtle
+```
+
+Discovery records running mining workers by turtle/rednet ID and label with:
+
+```lua
+cardinalDirection = "Awaiting-User-Input"
+```
+
+Manual enrollment asks for the turtle ID, label, cardinal direction, output
+chest, fuel chest, and whether the dock should be enabled for mining runs.
+
 Example lane job:
 
 ```lua
@@ -180,9 +236,9 @@ Side view:
       [fuel chest below]
 ```
 
-For the four-cardinal dock setup, each turtle owns one direction, one output
-chest behind it, one fuel chest below it, and one local `.dockmine_progress`
-file.
+Each enabled dock owns one output chest behind its turtle, one fuel chest below
+the turtle, and one local `.dockmine_progress` file. A managed area can run with
+fewer than four docks and later expand by adding more enabled dock entries.
 
 ## Program Files
 

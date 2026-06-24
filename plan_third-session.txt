@@ -1,0 +1,148 @@
+# Gaming Session 3 Targets
+
+## Main Goal
+
+Build the first practical managed-area mining loop with one turtle, while
+choosing the physical layout and config shape so it can scale to four turtles
+per managed area.
+
+The two required features are:
+
+```text
+1. The managed-area computer manages one mining turtle:
+   - supplies dock fuel
+   - sends the mining command
+   - tracks turtle status
+
+2. The managed-area computer handles output storage:
+   - pulls mined items from the turtle output chest
+   - stores them in modem-connected storage chests
+   - indexes what is stored where
+```
+
+## Definition Of Done
+
+By the end of session 3:
+
+```text
+[ ] managed-area computer sees all required wired modem peripherals
+[ ] one turtle is running mining_worker
+[ ] managed-area computer can run a short managed mining job
+[ ] managed-area computer can top up the dock fuel chest
+[ ] turtle can run dockmine from the managed job
+[ ] turtle returns to dock and unloads into the output chest
+[ ] managed-area computer empties the output chest into storage
+[ ] managed-area computer can report indexed item counts and locations
+[ ] setup shape is ready to expand from 1 turtle to 4 turtles
+```
+
+## Physical Layout
+
+Use one dock first:
+
+```text
+Top view:
+
+[output chest] [turtle -> tunnel direction]
+
+Side view:
+
+       tunnel direction
+             ^
+             |
+        [turtle]
+             |
+      [fuel chest below]
+```
+
+The managed-area computer should be connected to the following peripherals:
+
+```text
+- the dock output chest
+- the dock fuel chest
+- one central fuel source chest
+- two or more indexed storage chests
+```
+
+The turtle needs a wireless modem so it can receive jobs from the managed-area
+computer.
+
+## Scaling Shape
+
+Even though session 3 starts with one turtle, build the area as if the eventual
+layout is:
+
+```text
+north dock
+east dock
+south dock
+west dock
+```
+
+Adding a turtle later should only require:
+
+```text
+- place another dock
+- add one output chest
+- add one fuel chest
+- add turtleId and peripheral names to config
+- start mining_worker on that turtle
+```
+
+## Session Order
+
+```text
+1. Build the wired modem network.
+2. Run peripheral discovery from the managed-area computer.
+3. Place one dock with output chest behind and fuel chest below.
+4. Place a central fuel source chest and load it with coal or charcoal.
+5. Place indexed storage chests.
+6. Configure mining_area_config with real peripheral names and turtle ID.
+7. Run service-only mode before starting mining.
+8. Start mining_worker on the turtle.
+9. Run a short managed job first, such as target distance 16.
+10. If successful, run target distance 64.
+11. If still successful, run target distance 200.
+12. Scan or print the indexed storage contents.
+```
+
+## Suggested Commands
+
+On the managed-area computer:
+
+```lua
+mining_area peripherals
+mining_area service
+mining_area 16
+mining_area 64
+mining_area 200
+```
+
+On the turtle:
+
+```lua
+mining_worker
+```
+
+If the worker should only accept jobs from one controller, start it with:
+
+```lua
+mining_worker minecraft-cc-t:mining_area <controller-id>
+```
+
+## Keep Out Of Scope
+
+Do not try to finish these during session 3:
+
+```text
+- four active turtles
+- full storage taxonomy routing
+- automatic item retrieval
+- Mekanism machine logistics
+- GPS
+- command-center orchestration
+```
+
+The session 3 win condition is one reliable managed turtle plus indexed output
+storage. Four turtles should be a config/layout expansion after that, not a new
+architecture.
