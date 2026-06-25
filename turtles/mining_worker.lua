@@ -218,7 +218,7 @@ local function runDockmine(program, blocksToMine, fuelMargin)
   return true
 end
 
-local function runWideDockmine(program, depth, lanes, side, fuelMargin)
+local function runWideDockmine(program, dockmineProgram, depth, lanes, side, fuelMargin)
   if lanes <= 0 then
     return true
   end
@@ -242,7 +242,9 @@ local function runWideDockmine(program, depth, lanes, side, fuelMargin)
       side,
       tostring(fuelMargin),
       "offset",
-      sideRelativeOffset
+      sideRelativeOffset,
+      "dockmine",
+      dockmineProgram
     )
   else
     ok, result = pcall(
@@ -251,7 +253,9 @@ local function runWideDockmine(program, depth, lanes, side, fuelMargin)
       tostring(lanes),
       side,
       "offset",
-      sideRelativeOffset
+      sideRelativeOffset,
+      "dockmine",
+      dockmineProgram
     )
   end
 
@@ -395,6 +399,7 @@ local function runJob(controller, job)
       sendStatus(controller, job, "running", "mining " .. leftLanes .. " lanes left")
       jobOk, jobMessage = runWideDockmine(
         wideDockmineProgram,
+        dockmineProgram,
         targetDistance,
         leftLanes,
         "left",
@@ -406,6 +411,7 @@ local function runJob(controller, job)
       sendStatus(controller, job, "running", "mining " .. rightLanes .. " lanes right")
       jobOk, jobMessage = runWideDockmine(
         wideDockmineProgram,
+        dockmineProgram,
         targetDistance,
         rightLanes,
         "right",

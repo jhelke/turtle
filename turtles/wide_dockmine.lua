@@ -2,6 +2,7 @@
 -- Usage:
 --   wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>]
 --   wide_dockmine <depth> <width> [fuel-margin] [offset <lanes>]
+--   wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>] [dockmine <path>]
 --
 -- Examples:
 --   wide_dockmine 32 3
@@ -26,11 +27,18 @@ local width = tonumber(args[2])
 local side = "right"
 local margin = 32
 local offset = 0
+local dockminePath = nil
 local argError = nil
 
 local function usage()
   print("Usage: wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>]")
-  print("   or: wide_dockmine <depth> <width> [fuel-margin] [offset <lanes>]")
+  print("   or: wide_dockmine <depth> <width> [fuel-margin] [offset <lanes>] [dockmine <path>]")
+  print("Runs dockmine lanes from one serviced dock.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
 end
 
 local function isPositiveWholeNumber(value)
@@ -387,6 +395,20 @@ local function returnToDockLane(distance)
 end
 
 local function resolveDockmine()
+  if dockminePath and dockminePath ~= "" then
+    if fs.exists(dockminePath) and not fs.isDir(dockminePath) then
+      return dockminePath
+    end
+
+    if shell and shell.resolveProgram then
+      local resolved = shell.resolveProgram(dockminePath)
+
+      if resolved then
+        return resolved
+      end
+    end
+  end
+
   local candidates = {
     "dockmine",
     "dockmine.lua",
@@ -485,6 +507,17 @@ while args[argIndex] do
 
     offset = tonumber(string.sub(arg, 8))
     seenOffset = true
+    argIndex = argIndex + 1
+  elseif arg == "dockmine" then
+    if not args[argIndex + 1] then
+      argError = "dockmine requires a path."
+      break
+    end
+
+    dockminePath = args[argIndex + 1]
+    argIndex = argIndex + 2
+  elseif string.sub(arg, 1, 9) == "dockmine=" then
+    dockminePath = string.sub(arg, 10)
     argIndex = argIndex + 1
   else
     local number = tonumber(arg)
