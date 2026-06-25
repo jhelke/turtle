@@ -20,6 +20,7 @@ managed_area.md
 - local job queue
 - turtle assignment
 - peripherals, machines, chests, screens, and docks
+- first mining-only controller in computers/mining_area.lua
 
 protocol.md
 - shared message formats
@@ -31,6 +32,7 @@ mining.md
 - lane-job generation
 - standalone vs managed-area mining behavior
 - junk policy and tunnel assumptions
+- managed cardinal mining worker in turtles/mining_worker.lua
 
 storage.md
 - storage philosophy and roadmap

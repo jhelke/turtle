@@ -63,7 +63,8 @@ complete without mining.
 The computer does not send movement commands. It sends one `mine-distance` job
 to each turtle and keeps servicing local peripherals:
 
-- fills each dock's fuel chest from configured fuel storage
+- before each job, queries the turtle's fuel/progress and stages only the
+  calculated fuel items in that dock's fuel chest
 - empties each dock's output chest into configured storage
 - tracks turtle status until all enabled docks complete, fail, or go offline
 
@@ -79,11 +80,14 @@ Use this on the computer to discover peripheral names:
 mining_area peripherals
 ```
 
-Use this to test chest servicing without starting turtles:
+Use this to test output chest servicing without starting turtles:
 
 ```lua
 mining_area service
 ```
+
+For creative-mode tests with unlimited turtle fuel, set `fuelMaxItemsPerJob = 0`
+in `mining_area_config` to disable managed fuel supply.
 
 Use this to discover running mining workers:
 

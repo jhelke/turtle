@@ -147,7 +147,7 @@ local function refuelFromChestBelow()
 
     turtle.select(freeSlot)
 
-    local ok = turtle.suckDown(1)
+    local ok = turtle.suckDown()
 
     if not ok then
       break
@@ -156,7 +156,11 @@ local function refuelFromChestBelow()
     local isFuel = turtle.refuel(0)
 
     if isFuel then
-      turtle.refuel(1)
+      turtle.refuel()
+
+      if turtle.getItemCount(freeSlot) > 0 then
+        turtle.dropDown()
+      end
     else
       turtle.dropDown()
       print("Non-fuel item in fuel chest below.")

@@ -84,6 +84,20 @@ local function makeDiscovery()
   }
 end
 
+local function makeFuelReport(query)
+  return {
+    type = "fuel-report",
+    queryId = query and query.queryId,
+    jobId = query and query.jobId,
+    turtleId = os.getComputerID(),
+    rednetId = os.getComputerID(),
+    label = os.getComputerLabel(),
+    fuel = fuelLevel(),
+    fuelLimit = turtle.getFuelLimit(),
+    progress = readProgress(),
+  }
+end
+
 local function sendStatus(targetId, job, status, message)
   rednet.send(targetId, makeStatus(job, status, message), protocol)
 end
@@ -292,6 +306,10 @@ local function main()
       and (not controllerId or sender == controllerId) then
       if type(message) == "table" and message.type == "mining-area-discover" then
         rednet.send(sender, makeDiscovery(), protocol)
+      elseif type(message) == "table" and message.type == "fuel-query" then
+        if not message.turtleId or message.turtleId == os.getComputerID() then
+          rednet.send(sender, makeFuelReport(message), protocol)
+        end
       else
         local ok, err = pcall(runJob, sender, message)
 

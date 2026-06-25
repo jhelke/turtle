@@ -52,6 +52,62 @@ A job is a bounded unit of work for one turtle.
 
 Jobs usually travel from managed area to turtle.
 
+The first cardinal mining area also supports a `mine-distance` job. It is a
+straight dock job where `targetDistance` is the absolute desired
+`.dockmine_progress` value on that turtle:
+
+```lua
+{
+  type = "job",
+  jobId = "mine_01-east-12345",
+  task = "mine-distance",
+  heading = "east",
+  turtleId = 22,
+  params = {
+    targetDistance = 150,
+    laneLength = 150,
+    laneOffset = 0,
+    laneWidth = 1,
+    laneHeight = 2,
+  },
+}
+```
+
+## Job-Start Fuel Query
+
+Before sending a job that uses managed fuel supply, the managed-area computer
+asks the idle worker for its current dock-progress and fuel state:
+
+```lua
+{
+  type = "fuel-query",
+  queryId = "mine_01-east-12345-fuel",
+  jobId = "mine_01-east-12345",
+  turtleId = 22,
+  params = {
+    targetDistance = 150,
+    fuelMargin = 32,
+  },
+}
+```
+
+The worker replies before the job is dispatched:
+
+```lua
+{
+  type = "fuel-report",
+  queryId = "mine_01-east-12345-fuel",
+  jobId = "mine_01-east-12345",
+  turtleId = 22,
+  fuel = 842,
+  fuelLimit = 20000,
+  progress = 37,
+}
+```
+
+The manager uses this report to stage only the calculated number of fuel items
+in the dock fuel chest. The periodic service loop should not top up fuel.
+
 ## Turtle Status
 
 ```lua
@@ -61,6 +117,7 @@ Jobs usually travel from managed area to turtle.
   jobId = "dock_a-lane-004",
   status = "running",
   fuel = 842,
+  progress = 37,
   position = {
     forward = 37,
     right = -8,

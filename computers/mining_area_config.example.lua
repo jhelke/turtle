@@ -3,27 +3,49 @@
 --
 -- Then replace all peripheral names and turtle IDs with the names printed by:
 --   mining_area peripherals
+--
+-- Chests and barrels use peripheral names like "minecraft:chest_10".
+-- Under storage/fuelStorage, add only the suffix numbers after each prefix.
+-- Rednet IDs are only for turtles/computers.
 
 return {
   areaId = "mine_01",
   protocol = "minecraft-cc-t:mining_area",
 
   fuelItem = "minecraft:coal",
-  fuelTargetItems = 64,
+  fuelUnitsPerItem = 80,
+  -- Job-start fuel staging asks the turtle for fuel/progress and supplies only
+  -- the calculated item count. Set to 0 to disable managed fuel supply.
+  fuelMaxItemsPerJob = 64,
   fuelMargin = 32,
+  fuelQueryTimeout = 5,
 
   serviceInterval = 5,
   statusTimeout = 45,
   heartbeatInterval = 5,
   dockRegistryFile = "mining_area_docks",
 
-  storageChests = {
-    "minecraft:chest_10",
-    "minecraft:chest_11",
+  -- Mined output storage.
+  storage = {
+    ["minecraft:chest_"] = {
+      10,
+      11,
+    },
+
+    ["minecraft:barrel_"] = {
+      -- 10,
+    },
   },
 
-  fuelStorageChests = {
-    "minecraft:barrel_12",
+  -- Fuel source storage. The controller pulls fuelItem from these.
+  fuelStorage = {
+    ["minecraft:chest_"] = {
+      -- 12,
+    },
+
+    ["minecraft:barrel_"] = {
+      12,
+    },
   },
 
   -- Optional static docks. You can leave this empty and use:
