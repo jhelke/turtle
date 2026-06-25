@@ -15,10 +15,12 @@ local args = { ... }
 local DEFAULT_PROTOCOL = "minecraft-cc-t:mining_area"
 local DEFAULT_CONFIG = "mining_area_config"
 local DEFAULT_FUEL_ITEM = "minecraft:coal"
-local DEFAULT_FUEL_MAX_ITEMS_PER_JOB = 64
+local DEFAULT_FUEL_MAX_ITEMS_PER_JOB = 256
 local DEFAULT_FUEL_UNITS_PER_ITEM = 80
 local DEFAULT_FUEL_MARGIN = 32
 local DEFAULT_FUEL_QUERY_TIMEOUT = 5
+local DEFAULT_LEFT_LANES = 20
+local DEFAULT_RIGHT_LANES = 20
 local DEFAULT_SERVICE_INTERVAL = 5
 local DEFAULT_STATUS_TIMEOUT = 45
 local DEFAULT_HEARTBEAT_INTERVAL = 3
@@ -190,6 +192,27 @@ local function configuredFuelMargin(dock, config)
   return tonumber(config.fuelMargin)
 end
 
+local function configuredLeftLanes(dock, config)
+  if dock and dock.leftLanes ~= nil then
+    return tonumber(dock.leftLanes)
+  end
+
+  return tonumber(config.leftLanes)
+end
+
+local function configuredRightLanes(dock, config)
+  if dock and dock.rightLanes ~= nil then
+    return tonumber(dock.rightLanes)
+  end
+
+  return tonumber(config.rightLanes)
+end
+
+local function configuredSideLanes(dock, config)
+  return configuredLeftLanes(dock, config) or 0,
+    configuredRightLanes(dock, config) or 0
+end
+
 local function isBlank(value)
   return value == nil or tostring(value) == ""
 end
@@ -234,6 +257,8 @@ local function makeDefaultConfig(configPath)
     fuelUnitsPerItem = DEFAULT_FUEL_UNITS_PER_ITEM,
     fuelMargin = DEFAULT_FUEL_MARGIN,
     fuelQueryTimeout = DEFAULT_FUEL_QUERY_TIMEOUT,
+    leftLanes = DEFAULT_LEFT_LANES,
+    rightLanes = DEFAULT_RIGHT_LANES,
     serviceInterval = DEFAULT_SERVICE_INTERVAL,
     statusTimeout = DEFAULT_STATUS_TIMEOUT,
     heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL,
@@ -321,6 +346,17 @@ local function loadConfig(path)
   config.heartbeatInterval = tonumber(config.heartbeatInterval) or DEFAULT_HEARTBEAT_INTERVAL
   config.fuelQueryTimeout = tonumber(config.fuelQueryTimeout) or DEFAULT_FUEL_QUERY_TIMEOUT
   config.fuelMargin = tonumber(config.fuelMargin) or DEFAULT_FUEL_MARGIN
+  config.leftLanes = tonumber(config.leftLanes)
+  config.rightLanes = tonumber(config.rightLanes)
+
+  if config.leftLanes == nil then
+    config.leftLanes = DEFAULT_LEFT_LANES
+  end
+
+  if config.rightLanes == nil then
+    config.rightLanes = DEFAULT_RIGHT_LANES
+  end
+
   config.dockRegistryFile = config.dockRegistryFile or DEFAULT_DOCK_REGISTRY
   config.docks = config.docks or {}
 
@@ -563,11 +599,15 @@ local function validateDock(direction, dock, config)
   local rawFuelTargetItems = dock.fuelTargetItems
   local rawFuelMaxItemsPerJob = dock.fuelMaxItemsPerJob
   local rawFuelUnitsPerItem = dock.fuelUnitsPerItem
+  local rawLeftLanes = dock.leftLanes
+  local rawRightLanes = dock.rightLanes
   dock.turtleId = tonumber(dock.turtleId)
   dock.fuelTargetItems = tonumber(dock.fuelTargetItems)
   dock.fuelMaxItemsPerJob = tonumber(dock.fuelMaxItemsPerJob)
   dock.fuelUnitsPerItem = tonumber(dock.fuelUnitsPerItem)
   dock.fuelMargin = tonumber(dock.fuelMargin)
+  dock.leftLanes = tonumber(dock.leftLanes)
+  dock.rightLanes = tonumber(dock.rightLanes)
 
   if dock.fuelMaxItemsPerJob == nil and rawFuelMaxItemsPerJob == nil then
     dock.fuelMaxItemsPerJob = dock.fuelTargetItems
@@ -593,6 +633,14 @@ local function validateDock(direction, dock, config)
     return false, direction .. " dock fuelUnitsPerItem must be a positive whole number"
   end
 
+  if rawLeftLanes ~= nil and dock.leftLanes == nil then
+    return false, direction .. " dock leftLanes must be a non-negative whole number"
+  end
+
+  if rawRightLanes ~= nil and dock.rightLanes == nil then
+    return false, direction .. " dock rightLanes must be a non-negative whole number"
+  end
+
   if dock.fuelMaxItemsPerJob ~= nil
     and not isNonNegativeWholeNumber(dock.fuelMaxItemsPerJob) then
     return false, direction .. " dock fuelMaxItemsPerJob must be a non-negative whole number"
@@ -601,6 +649,14 @@ local function validateDock(direction, dock, config)
   if dock.fuelUnitsPerItem ~= nil
     and not isPositiveWholeNumber(dock.fuelUnitsPerItem) then
     return false, direction .. " dock fuelUnitsPerItem must be a positive whole number"
+  end
+
+  if dock.leftLanes ~= nil and not isNonNegativeWholeNumber(dock.leftLanes) then
+    return false, direction .. " dock leftLanes must be a non-negative whole number"
+  end
+
+  if dock.rightLanes ~= nil and not isNonNegativeWholeNumber(dock.rightLanes) then
+    return false, direction .. " dock rightLanes must be a non-negative whole number"
   end
 
   local storageChests = configuredStorageTargets(dock, config)
@@ -641,6 +697,14 @@ local function validateConfig(config)
 
   if not isPositiveWholeNumber(config.fuelQueryTimeout) then
     return false, "fuelQueryTimeout must be a positive whole number"
+  end
+
+  if not isNonNegativeWholeNumber(config.leftLanes) then
+    return false, "leftLanes must be a non-negative whole number"
+  end
+
+  if not isNonNegativeWholeNumber(config.rightLanes) then
+    return false, "rightLanes must be a non-negative whole number"
   end
 
   if not isPositiveWholeNumber(config.serviceInterval) then
@@ -860,11 +924,17 @@ end
 local function makeJob(config, dock, targetDistance, runId)
   local name = dockDisplayName(dock)
   local heading = dock.cardinalDirection or PLACEHOLDER_CARDINAL_DIRECTION
+  local leftLanes, rightLanes = configuredSideLanes(dock, config)
+  local task = "mine-distance"
+
+  if leftLanes > 0 or rightLanes > 0 then
+    task = "mine-area"
+  end
 
   return {
     type = "job",
     jobId = config.areaId .. "-" .. name .. "-" .. runId,
-    task = "mine-distance",
+    task = task,
     ao = dock.ao or name,
     heading = heading,
     turtleId = dock.turtleId,
@@ -874,6 +944,8 @@ local function makeJob(config, dock, targetDistance, runId)
       laneOffset = 0,
       laneWidth = 1,
       laneHeight = 2,
+      leftLanes = leftLanes,
+      rightLanes = rightLanes,
       fuelMargin = dock.fuelMargin or config.fuelMargin,
       heartbeatInterval = config.heartbeatInterval,
     },
@@ -1025,6 +1097,63 @@ local function numericFuel(value)
   return tonumber(value)
 end
 
+local function sideRunFuelNeeded(depth, lanes, margin)
+  if lanes <= 0 then
+    return 0
+  end
+
+  local offset = 1
+  local sideStepsRemaining = lanes - 1
+  local sideStepsBackToDockLane = offset + lanes - 1
+
+  return offset
+    + lanes * depth * 2
+    + sideStepsRemaining
+    + sideStepsBackToDockLane
+    + margin
+end
+
+local function calculateJobFuelNeed(worker, report, config)
+  local params = worker.job.params or {}
+  local targetDistance = tonumber(params.targetDistance or params.laneLength)
+  local progress = tonumber(report.progress) or 0
+  local fuelMargin = configuredFuelMargin(worker.dock, config)
+
+  if not targetDistance then
+    return nil, "job target distance is missing"
+  end
+
+  if not fuelMargin or fuelMargin < 0 or fuelMargin ~= math.floor(fuelMargin) then
+    return nil, "fuelMargin must be a non-negative whole number"
+  end
+
+  local centerFuel = 0
+
+  if progress < targetDistance then
+    centerFuel = targetDistance * 2 + fuelMargin + 2
+  end
+
+  local leftLanes = tonumber(params.leftLanes) or 0
+  local rightLanes = tonumber(params.rightLanes) or 0
+  local leftFuel = 0
+  local rightFuel = 0
+
+  if worker.job.task == "mine-area" then
+    leftFuel = sideRunFuelNeeded(targetDistance, leftLanes, fuelMargin)
+    rightFuel = sideRunFuelNeeded(targetDistance, rightLanes, fuelMargin)
+  end
+
+  return {
+    totalFuel = centerFuel + leftFuel + rightFuel,
+    maxPhaseFuel = math.max(centerFuel, leftFuel, rightFuel),
+    targetDistance = targetDistance,
+    progress = progress,
+    centerFuel = centerFuel,
+    leftFuel = leftFuel,
+    rightFuel = rightFuel,
+  }
+end
+
 local function calculateJobFuelItems(worker, config)
   local maxItems = configuredFuelMaxItems(worker.dock, config) or 0
 
@@ -1055,32 +1184,35 @@ local function calculateJobFuelItems(worker, config)
     return nil, "fuel report did not include numeric fuel"
   end
 
-  local targetDistance = tonumber(worker.job.params.targetDistance)
-  local progress = tonumber(report.progress) or 0
-
-  if not targetDistance then
-    return nil, "job target distance is missing"
-  end
-
-  if progress >= targetDistance then
-    return {
-      requestedItems = 0,
-      message = "target already reached",
-    }
-  end
-
   local fuelUnitsPerItem = configuredFuelUnitsPerItem(worker.dock, config)
-  local fuelMargin = configuredFuelMargin(worker.dock, config)
 
   if not isPositiveWholeNumber(fuelUnitsPerItem) then
     return nil, "fuelUnitsPerItem must be a positive whole number"
   end
 
-  if not fuelMargin or fuelMargin < 0 or fuelMargin ~= math.floor(fuelMargin) then
-    return nil, "fuelMargin must be a non-negative whole number"
+  local need, needMessage = calculateJobFuelNeed(worker, report, config)
+
+  if not need then
+    return nil, needMessage
   end
 
-  local targetFuel = targetDistance * 2 + fuelMargin + 2
+  if fuelLimit and fuelLimit ~= math.huge and need.maxPhaseFuel > fuelLimit then
+    return nil,
+      "job phase needs " .. tostring(need.maxPhaseFuel)
+      .. " fuel, above turtle fuel limit " .. tostring(fuelLimit)
+  end
+
+  if need.totalFuel <= 0 then
+    return {
+      requestedItems = 0,
+      neededFuel = 0,
+      targetFuel = 0,
+      progress = need.progress,
+      message = "target already reached",
+    }
+  end
+
+  local targetFuel = need.totalFuel
   local neededFuel = targetFuel - currentFuel
 
   if neededFuel < 0 then
@@ -1100,7 +1232,10 @@ local function calculateJobFuelItems(worker, config)
     neededFuel = neededFuel,
     targetFuel = targetFuel,
     currentFuel = currentFuel,
-    progress = progress,
+    progress = need.progress,
+    centerFuel = need.centerFuel,
+    leftFuel = need.leftFuel,
+    rightFuel = need.rightFuel,
     message = "needs " .. requestedItems .. " fuel items",
   }
 end
@@ -1592,6 +1727,8 @@ local function runMiningArea(config, targetDistance)
   print("Target distance: " .. targetDistance)
   print("Fuel item: " .. config.fuelItem)
   print("Storage: " .. formatList(configuredStorageTargets(nil, config)))
+  print("Default side lanes: left=" .. tostring(config.leftLanes)
+    .. " right=" .. tostring(config.rightLanes))
   print("")
 
   print("Initial dock service")
@@ -1653,6 +1790,11 @@ local function runMiningArea(config, targetDistance)
 end
 
 local function main()
+  if args[1] == "-h" or args[1] == "--help" then
+    usage()
+    return true
+  end
+
   if args[1] == "peripherals" or args[1] == "list-peripherals" then
     listPeripherals()
     return true

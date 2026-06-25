@@ -55,13 +55,18 @@ Run it on the managed-area computer with a target distance:
 mining_area 150
 ```
 
-The target distance is absolute per dock. If a turtle's `.dockmine_progress`
-already says `40`, a `mining_area 150` run asks that turtle to mine `110` more
-blocks. If progress is already at or past the target, the worker reports
-complete without mining.
+The target distance is absolute for the dock lane. If a turtle's
+`.dockmine_progress` already says `40`, a `mining_area 150` run asks that
+turtle to mine `110` more dock-lane blocks. Side lanes are bounded runs to the
+same depth.
+
+By default, each managed job mines the dock lane first, then 20 lanes left from
+the dock position, then 20 lanes right from the dock position. Set
+`leftLanes = 0` and `rightLanes = 0` in `mining_area_config` for single-lane
+testing.
 
 The computer does not send movement commands. It sends one `mine-distance` job
-to each turtle and keeps servicing local peripherals:
+or `mine-area` job to each turtle and keeps servicing local peripherals:
 
 - before each job, queries the turtle's fuel/progress and stages only the
   calculated fuel items in that dock's fuel chest

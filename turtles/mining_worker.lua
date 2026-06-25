@@ -12,6 +12,16 @@ local DEFAULT_PROTOCOL = "minecraft-cc-t:mining_area"
 local DEFAULT_HEARTBEAT_INTERVAL = 5
 local PROGRESS_FILE = ".dockmine_progress"
 
+local function usage()
+  print("Usage: mining_worker [protocol] [controller-id]")
+  print("Waits for managed mining jobs over rednet.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
+end
+
 local protocol = args[1] or DEFAULT_PROTOCOL
 local controllerId = tonumber(args[2])
 
@@ -149,6 +159,39 @@ local function resolveDockmine()
   return nil
 end
 
+local function resolveWideDockmine()
+  local candidates = {
+    "wide_dockmine",
+    "wide_dockmine.lua",
+  }
+
+  if shell and shell.getRunningProgram then
+    local runningProgram = shell.getRunningProgram()
+    local runningDir = runningProgram and fs.getDir(runningProgram) or ""
+
+    if runningDir ~= "" then
+      candidates[#candidates + 1] = fs.combine(runningDir, "wide_dockmine")
+      candidates[#candidates + 1] = fs.combine(runningDir, "wide_dockmine.lua")
+    end
+  end
+
+  for _, candidate in ipairs(candidates) do
+    if shell and shell.resolveProgram then
+      local resolved = shell.resolveProgram(candidate)
+
+      if resolved then
+        return resolved
+      end
+    end
+
+    if fs.exists(candidate) and not fs.isDir(candidate) then
+      return candidate
+    end
+  end
+
+  return nil
+end
+
 local function runDockmine(program, blocksToMine, fuelMargin)
   local chunk, loadErr = loadfile(program)
 
@@ -175,12 +218,62 @@ local function runDockmine(program, blocksToMine, fuelMargin)
   return true
 end
 
+local function runWideDockmine(program, depth, lanes, side, fuelMargin)
+  if lanes <= 0 then
+    return true
+  end
+
+  -- Offset is side-relative in wide_dockmine. With the dock lane already mined,
+  -- offset 1 means "start at the first lane to the requested side".
+  local sideRelativeOffset = "1"
+  local chunk, loadErr = loadfile(program)
+
+  if not chunk then
+    return false, "could not load wide_dockmine: " .. tostring(loadErr)
+  end
+
+  local ok, result
+
+  if fuelMargin then
+    ok, result = pcall(
+      chunk,
+      tostring(depth),
+      tostring(lanes),
+      side,
+      tostring(fuelMargin),
+      "offset",
+      sideRelativeOffset
+    )
+  else
+    ok, result = pcall(
+      chunk,
+      tostring(depth),
+      tostring(lanes),
+      side,
+      "offset",
+      sideRelativeOffset
+    )
+  end
+
+  if not ok then
+    return false, "wide_dockmine crashed: " .. tostring(result)
+  end
+
+  if result == false then
+    return false, "wide_dockmine returned failure"
+  end
+
+  return true
+end
+
 local function isSupportedJob(job)
   if type(job) ~= "table" or job.type ~= "job" then
     return false, "not a job message"
   end
 
-  if job.task ~= "mine-distance" and job.task ~= "mine-lane" then
+  if job.task ~= "mine-distance"
+    and job.task ~= "mine-lane"
+    and job.task ~= "mine-area" then
     return false, "unsupported task: " .. tostring(job.task)
   end
 
@@ -211,6 +304,22 @@ local function targetDistanceForJob(job)
   return targetDistance
 end
 
+local function sideLaneCountsForJob(job)
+  local params = job.params or {}
+  local leftLanes = tonumber(params.leftLanes or 0) or 0
+  local rightLanes = tonumber(params.rightLanes or 0) or 0
+
+  if leftLanes < 0 or leftLanes ~= math.floor(leftLanes) then
+    return nil, nil, "leftLanes must be a non-negative whole number"
+  end
+
+  if rightLanes < 0 or rightLanes ~= math.floor(rightLanes) then
+    return nil, nil, "rightLanes must be a non-negative whole number"
+  end
+
+  return leftLanes, rightLanes
+end
+
 local function runJob(controller, job)
   local supported, supportMessage = isSupportedJob(job)
 
@@ -234,12 +343,19 @@ local function runJob(controller, job)
   end
 
   local fuelMargin = tonumber(params.fuelMargin)
+  local leftLanes, rightLanes, sideMessage = sideLaneCountsForJob(job)
+
+  if not leftLanes then
+    sendError(controller, job, "invalid_side_lanes", sideMessage)
+    return
+  end
+
   local currentProgress = readProgress()
   local remaining = targetDistance - currentProgress
 
   sendStatus(controller, job, "running", "accepted target " .. targetDistance)
 
-  if remaining <= 0 then
+  if remaining <= 0 and job.task ~= "mine-area" then
     sendStatus(controller, job, "complete", "target already reached")
     return
   end
@@ -251,18 +367,58 @@ local function runJob(controller, job)
     return
   end
 
+  local wideDockmineProgram = nil
+
+  if job.task == "mine-area" and (leftLanes > 0 or rightLanes > 0) then
+    wideDockmineProgram = resolveWideDockmine()
+
+    if not wideDockmineProgram then
+      sendError(controller, job, "missing_program", "wide_dockmine is not installed")
+      return
+    end
+  end
+
   local done = false
   local jobOk = false
   local jobMessage = "not started"
 
   local function runner()
-    jobOk, jobMessage = runDockmine(dockmineProgram, remaining, fuelMargin)
+    jobOk = true
+    jobMessage = "complete"
+
+    if remaining > 0 then
+      sendStatus(controller, job, "running", "mining dock lane to target " .. targetDistance)
+      jobOk, jobMessage = runDockmine(dockmineProgram, remaining, fuelMargin)
+    end
+
+    if jobOk and job.task == "mine-area" and leftLanes > 0 then
+      sendStatus(controller, job, "running", "mining " .. leftLanes .. " lanes left")
+      jobOk, jobMessage = runWideDockmine(
+        wideDockmineProgram,
+        targetDistance,
+        leftLanes,
+        "left",
+        fuelMargin
+      )
+    end
+
+    if jobOk and job.task == "mine-area" and rightLanes > 0 then
+      sendStatus(controller, job, "running", "mining " .. rightLanes .. " lanes right")
+      jobOk, jobMessage = runWideDockmine(
+        wideDockmineProgram,
+        targetDistance,
+        rightLanes,
+        "right",
+        fuelMargin
+      )
+    end
+
     done = true
   end
 
   local function heartbeat()
     while not done do
-      sendStatus(controller, job, "running", "mining to target " .. targetDistance)
+      sendStatus(controller, job, "running", "mining area to target " .. targetDistance)
       sleep(heartbeatInterval)
     end
   end
@@ -272,7 +428,16 @@ local function runJob(controller, job)
   local finalProgress = readProgress()
 
   if jobOk and finalProgress >= targetDistance then
-    sendStatus(controller, job, "complete", "target reached")
+    if job.task == "mine-area" then
+      sendStatus(
+        controller,
+        job,
+        "complete",
+        "area target reached: center, " .. leftLanes .. " left, " .. rightLanes .. " right"
+      )
+    else
+      sendStatus(controller, job, "complete", "target reached")
+    end
   elseif jobOk then
     sendError(
       controller,

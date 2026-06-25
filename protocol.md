@@ -73,6 +73,30 @@ straight dock job where `targetDistance` is the absolute desired
 }
 ```
 
+For widened managed mining, the area can send `mine-area`. The worker mines the
+dock lane to `targetDistance` first, then mines side lanes from the dock
+position. Side runs use `wide_dockmine offset 1`; that offset is side-relative,
+so `left offset 1` starts one lane left of the dock lane and `right offset 1`
+starts one lane right of the dock lane.
+
+```lua
+{
+  type = "job",
+  jobId = "mine_01-east-12345",
+  task = "mine-area",
+  heading = "east",
+  turtleId = 22,
+  params = {
+    targetDistance = 150,
+    laneLength = 150,
+    laneOffset = 0,
+    leftLanes = 20,
+    rightLanes = 20,
+    fuelMargin = 32,
+  },
+}
+```
+
 ## Job-Start Fuel Query
 
 Before sending a job that uses managed fuel supply, the managed-area computer

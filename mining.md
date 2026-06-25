@@ -160,15 +160,21 @@ managed-area computer:
 
 each mining turtle:
 - turtles/dockmine.lua as dockmine
+- turtles/wide_dockmine.lua as wide_dockmine
 - turtles/mining_worker.lua as mining_worker
 ```
 
 Start `mining_worker` on each turtle, then run `mining_area <distance>` on the
-computer. At the start of each job, the computer asks the worker for its current
-fuel/progress, calculates the fuel items needed for that target, and stages only
-that amount in the dock fuel chest. The turtle still handles local movement,
-mining, unloading from its inventory, and refuelling from the dock fuel chest
-below it.
+computer. By default, one managed job mines the dock lane first, then 20 lanes
+left from the dock position, then 20 lanes right from the dock position. Set
+`leftLanes = 0` and `rightLanes = 0` in `mining_area_config` to keep the old
+single-lane behavior.
+
+At the start of each job, the computer asks the worker for its current
+fuel/progress, calculates the fuel items needed for that target and lane scope,
+and stages only that amount in the dock fuel chest. The turtle still handles
+local movement, mining, unloading from its inventory, and refuelling from the
+dock fuel chest below it.
 
 For creative-mode tests where turtle fuel is unlimited, set
 `fuelMaxItemsPerJob = 0` in `mining_area_config` to disable managed fuel supply.

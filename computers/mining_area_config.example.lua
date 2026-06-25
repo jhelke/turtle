@@ -8,6 +8,16 @@
 -- Under storage/fuelStorage, add only the suffix numbers after each prefix.
 -- Rednet IDs are only for turtles/computers.
 
+local args = { ... }
+
+if args[1] == "-h" or args[1] == "--help" then
+  print("Copy as: mining_area_config")
+  print("Names: run mining_area peripherals")
+  print("Storage: [\"minecraft:chest_\"] = { 10 }")
+  print("Turtles use rednet IDs; chests use peripheral names.")
+  return true
+end
+
 return {
   areaId = "mine_01",
   protocol = "minecraft-cc-t:mining_area",
@@ -16,9 +26,14 @@ return {
   fuelUnitsPerItem = 80,
   -- Job-start fuel staging asks the turtle for fuel/progress and supplies only
   -- the calculated item count. Set to 0 to disable managed fuel supply.
-  fuelMaxItemsPerJob = 64,
+  fuelMaxItemsPerJob = 256,
   fuelMargin = 32,
   fuelQueryTimeout = 5,
+
+  -- mining_area <depth> mines the dock lane first, then these side lanes.
+  -- Set both to 0 to keep the old single-lane behavior.
+  leftLanes = 20,
+  rightLanes = 20,
 
   serviceInterval = 5,
   statusTimeout = 45,
