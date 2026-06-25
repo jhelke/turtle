@@ -80,6 +80,11 @@ local function isLikelyInventoryBlock(blockName)
       or string.find(blockName, "barrel") ~= nil)
 end
 
+local function isProtectedBlock(blockName)
+  return type(blockName) == "string"
+    and string.find(blockName, "torch", 1, true) ~= nil
+end
+
 local function emptySlotCount()
   local count = 0
 
@@ -297,6 +302,14 @@ local function clearForward()
   local attempts = 0
 
   while turtle.detect() do
+    local found, detail = turtle.inspect()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected pass-through block in front: " .. blockName)
+      return true
+    end
+
     turtle.dig()
     sleep(0.2)
 
@@ -315,6 +328,14 @@ local function clearUp()
   local attempts = 0
 
   while turtle.detectUp() do
+    local found, detail = turtle.inspectUp()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected pass-through block above: " .. blockName)
+      return true
+    end
+
     turtle.digUp()
     sleep(0.2)
 
@@ -338,6 +359,15 @@ local function forwardRobust()
     end
 
     turtle.attack()
+
+    local found, detail = turtle.inspect()
+    local blockName = found and detail and detail.name or ""
+
+    if isProtectedBlock(blockName) then
+      print("Protected block in front: " .. blockName)
+      return false
+    end
+
     turtle.dig()
     sleep(0.3)
 
@@ -349,6 +379,24 @@ local function forwardRobust()
   return false
 end
 
+local currentSideOffset = 0
+
+local function recordSideStep(direction, moved)
+  if not moved then
+    return
+  end
+
+  if direction == side then
+    currentSideOffset = currentSideOffset + 1
+  else
+    currentSideOffset = currentSideOffset - 1
+
+    if currentSideOffset < 0 then
+      currentSideOffset = 0
+    end
+  end
+end
+
 local function stepSide(direction)
   if direction == "right" then
     turtle.turnRight()
@@ -356,7 +404,13 @@ local function stepSide(direction)
     turtle.turnLeft()
   end
 
-  local ok = clearForward() and forwardRobust() and clearUp()
+  local ok = false
+  local moved = false
+
+  if clearForward() and forwardRobust() then
+    moved = true
+    ok = clearUp()
+  end
 
   if direction == "right" then
     turtle.turnLeft()
@@ -364,14 +418,18 @@ local function stepSide(direction)
     turtle.turnRight()
   end
 
-  return ok
+  return ok, moved
 end
 
 local function moveSideSteps(direction, count, label)
   for step = 1, count do
     print(label .. ": " .. step .. "/" .. count)
 
-    if not stepSide(direction) then
+    local ok, moved = stepSide(direction)
+
+    recordSideStep(direction, moved)
+
+    if not ok then
       print("Could not complete side-step " .. step .. "/" .. count .. ".")
       return false
     end
@@ -392,6 +450,22 @@ local function returnToDockLane(distance)
   local returnSide = oppositeSide(side)
 
   return moveSideSteps(returnSide, distance, "Returning " .. returnSide .. " toward dock lane")
+end
+
+local function failAndReturnToDockLane(message)
+  print(message)
+
+  if currentSideOffset <= 0 then
+    return false
+  end
+
+  print("Attempting return to dock lane from side offset " .. currentSideOffset)
+
+  if not returnToDockLane(currentSideOffset) then
+    print("Could not return to dock lane. Manual rescue needed.")
+  end
+
+  return false
 end
 
 local function resolveDockmine()
@@ -592,7 +666,9 @@ else
   print("Skipping " .. offset .. " previously mined lanes " .. side)
 
   if not moveSideSteps(side, offset, "Moving " .. side .. " through mined lanes") then
-    return false
+    return failAndReturnToDockLane(
+      "Could not move through previously mined lanes."
+    )
   end
 end
 
@@ -601,17 +677,16 @@ for run = 1, width do
 
   if run > 1 or offset > 0 then
     if not ensureFuel(fuelNeededFromRun(run), "from lane " .. lane) then
-      return false
+      return failAndReturnToDockLane("Not enough fuel from lane " .. lane .. ".")
     end
   end
 
   if not ensureInventoryReady(lane) then
-    return false
+    return failAndReturnToDockLane("Inventory is not ready before lane " .. lane .. ".")
   end
 
   if not runDockmine(dockmineProgram, lane, run) then
-    print("Stopping at lane " .. lane .. ".")
-    return false
+    return failAndReturnToDockLane("Stopping at lane " .. lane .. ".")
   end
 
   if offset == 0 and run == 1 and width > 1 then
@@ -626,18 +701,23 @@ for run = 1, width do
     local nextLane = offset + nextRun
 
     if not ensureInventoryReady(nextLane) then
-      return false
+      return failAndReturnToDockLane(
+        "Inventory is not ready before lane " .. nextLane .. "."
+      )
     end
 
     if not ensureFuel(fuelNeededBeforeSideStep(nextRun), "before moving to lane " .. nextLane) then
-      return false
+      return failAndReturnToDockLane("Not enough fuel before moving to lane " .. nextLane .. ".")
     end
 
     print("Moving " .. side .. " to lane " .. nextLane)
 
-    if not stepSide(side) then
-      print("Could not move to lane " .. nextLane .. ".")
-      return false
+    local stepOk, moved = stepSide(side)
+
+    recordSideStep(side, moved)
+
+    if not stepOk then
+      return failAndReturnToDockLane("Could not move to lane " .. nextLane .. ".")
     end
   end
 end
@@ -646,7 +726,7 @@ local returnDistance = offset + width - 1
 
 if returnDistance > 0 then
   if not ensureFuel(returnDistance, "to return to the dock lane") then
-    return false
+    return failAndReturnToDockLane("Not enough fuel to return to the dock lane.")
   end
 
   if not returnToDockLane(returnDistance) then

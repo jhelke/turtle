@@ -255,8 +255,8 @@ local function clearForward()
     local blockName = found and detail and detail.name or ""
 
     if isProtectedBlock(blockName) then
-      print("Protected block in front: " .. blockName)
-      return false
+      print("Protected pass-through block in front: " .. blockName)
+      return true
     end
 
     turtle.dig()
@@ -281,8 +281,8 @@ local function clearUp()
     local blockName = found and detail and detail.name or ""
 
     if isProtectedBlock(blockName) then
-      print("Protected block above: " .. blockName)
-      return false
+      print("Protected pass-through block above: " .. blockName)
+      return true
     end
 
     turtle.digUp()
@@ -331,17 +331,21 @@ end
 local function moveToFace(progress)
   print("Moving to tunnel face: " .. progress .. " blocks")
 
+  local moved = 0
+
   for _ = 1, progress do
     if not clearForward() then
-      return false
+      return false, moved
     end
 
     if not forwardRobust() then
-      return false
+      return false, moved
     end
+
+    moved = moved + 1
   end
 
-  return true
+  return true, moved
 end
 
 local function returnHome(distance)
@@ -440,6 +444,12 @@ end
 
 local function usage()
   print("Usage: dockmine [max-new-blocks] [fuel-margin] [script]")
+  print("Mines a 1x2 tunnel from a fixed dock.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
 end
 
 if args[1] then
@@ -542,8 +552,19 @@ while true do
     return false
   end
 
-  if not moveToFace(progress) then
+  local faceOk, movedToFace = moveToFace(progress)
+
+  if not faceOk then
     print("Failed while moving to face. Manual rescue needed.")
+
+    if movedToFace and movedToFace > 0 then
+      print("Returning from partial face approach.")
+
+      if not returnHome(movedToFace) then
+        print("Could not return to dock. Manual rescue needed.")
+      end
+    end
+
     return false
   end
 
