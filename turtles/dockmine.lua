@@ -255,7 +255,6 @@ local function clearForward()
     local blockName = found and detail and detail.name or ""
 
     if isProtectedBlock(blockName) then
-      print("Protected pass-through block in front: " .. blockName)
       return true
     end
 
@@ -299,7 +298,7 @@ local function clearUp()
   return true
 end
 
-local function forwardRobust()
+local function forwardCleared()
   for attempt = 1, 5 do
     local ok, reason = turtle.forward()
 
@@ -326,6 +325,110 @@ local function forwardRobust()
   end
 
   return false
+end
+
+local function findProtectedItemSlot(preferredSlot)
+  if preferredSlot then
+    local detail = turtle.getItemDetail(preferredSlot)
+    if detail and isProtectedBlock(detail.name) then
+      return preferredSlot
+    end
+  end
+
+  for slot = 1, 16 do
+    local detail = turtle.getItemDetail(slot)
+    if detail and isProtectedBlock(detail.name) then
+      return slot
+    end
+  end
+
+  return nil
+end
+
+local function findProtectedPickupSlot()
+  for slot = 1, 16 do
+    local detail = turtle.getItemDetail(slot)
+    if detail
+      and isProtectedBlock(detail.name)
+      and turtle.getItemSpace(slot) > 0 then
+      return slot
+    end
+  end
+
+  return findEmptySlot()
+end
+
+local function moveThroughProtectedBlock(blockName)
+  local previousSlot = turtle.getSelectedSlot()
+  local pickupSlot = findProtectedPickupSlot()
+
+  if not pickupSlot then
+    print("No inventory space to preserve block: " .. blockName)
+    return false
+  end
+
+  turtle.select(pickupSlot)
+
+  local dug, digReason = turtle.dig()
+  if not dug then
+    turtle.select(previousSlot)
+    print("Could not pick up protected block: " .. tostring(digReason))
+    return false
+  end
+
+  local protectedSlot = findProtectedItemSlot(pickupSlot)
+  if not protectedSlot then
+    turtle.select(previousSlot)
+    print("Could not retain protected block after digging: " .. blockName)
+    return false
+  end
+
+  if not forwardCleared() then
+    turtle.select(protectedSlot)
+    turtle.place()
+    turtle.select(previousSlot)
+    return false
+  end
+
+  turnAround()
+  turtle.select(protectedSlot)
+
+  local placed, placeReason = turtle.place()
+  if placed then
+    turnAround()
+    turtle.select(previousSlot)
+    return true
+  end
+
+  print("Could not place protected block behind turtle: " .. tostring(placeReason))
+  print("Returning to restore it in its original position.")
+
+  local returned = turtle.forward()
+  turnAround()
+
+  if returned then
+    local restored, restoreReason = turtle.place()
+    if not restored then
+      print("Could not restore protected block: " .. tostring(restoreReason))
+    end
+  else
+    print("Could not return to the protected block's original position.")
+  end
+
+  turtle.select(previousSlot)
+  return false
+end
+
+local function forwardRobust()
+  local found, detail = turtle.inspect()
+  local blockName = found and detail and detail.name or ""
+
+  if isProtectedBlock(blockName) then
+    print("Temporarily relocating protected block: " .. blockName)
+    return moveThroughProtectedBlock(blockName)
+  end
+
+  return forwardCleared()
 end
 
 local function moveToFace(progress)
