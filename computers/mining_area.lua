@@ -1804,6 +1804,13 @@ local function runMiningArea(config, targetDistance)
     end
   end
 
+  if not serviceAll(config) then
+    print("Final output transfer failed.")
+    print("Fix the output/storage chests, then run mining_area service.")
+    return false
+  end
+
+  print("Mining complete. Final output moved to configured storage.")
   return true
 end
 

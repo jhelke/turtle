@@ -859,6 +859,12 @@ if returnDistance > 0 then
   end
 end
 
+if not unloadBehind() then
+  print("Final unload failed.")
+  print("Clear the dock output chest, then retry the job.")
+  return false
+end
+
 print("")
 print("wide_dockmine complete")
 return true
