@@ -6,6 +6,8 @@
 local DEFAULT_OWNER = "jhelke"
 local DEFAULT_REPO = "turtle"
 local DEFAULT_REF = "main"
+local MANIFEST_NAME = ".repo_sync_manifest"
+local MANIFEST_HEADER = "repo-sync-manifest-v1"
 
 local args = { ... }
 
@@ -20,6 +22,7 @@ local function usage()
   print("  target-dir=current directory")
   print("")
   print("Does not download or write .md/.txt docs.")
+  print("Removes files owned by the previous sync before downloading.")
 end
 
 if args[1] == "-h" or args[1] == "--help" then
@@ -79,7 +82,11 @@ local function isSafeRepoPath(path)
     return false
   end
 
-  if string.sub(path, 1, 1) == "/" or string.find(path, "//", 1, true) then
+  if string.sub(path, 1, 1) == "/"
+    or string.sub(path, -1) == "/"
+    or string.find(path, "//", 1, true)
+    or string.find(path, "%c")
+  then
     return false
   end
 
@@ -112,6 +119,52 @@ local function writeFile(path, body)
   return true
 end
 
+local function readManifest(path)
+  if not fs.exists(path) then
+    return {}
+  end
+
+  if fs.isDir(path) then
+    error("Sync manifest is a directory: " .. path, 0)
+  end
+
+  local file, err = fs.open(path, "r")
+  if not file then
+    error("Could not read sync manifest: " .. tostring(err), 0)
+  end
+
+  local body = file.readAll()
+  file.close()
+
+  local lines = {}
+  for line in string.gmatch(body, "[^\r\n]+") do
+    lines[#lines + 1] = line
+  end
+
+  if lines[1] ~= MANIFEST_HEADER then
+    error("Sync manifest has an unsupported format: " .. path, 0)
+  end
+
+  local paths = {}
+  for index = 2, #lines do
+    if not isSafeRepoPath(lines[index]) then
+      error("Sync manifest contains an unsafe path: " .. tostring(lines[index]), 0)
+    end
+    paths[#paths + 1] = lines[index]
+  end
+
+  return paths
+end
+
+local function writeManifest(path, paths)
+  local lines = { MANIFEST_HEADER }
+  for _, repoPath in ipairs(paths) do
+    lines[#lines + 1] = repoPath
+  end
+
+  return writeFile(path, table.concat(lines, "\n") .. "\n")
+end
+
 local function shouldSyncPath(path)
   local lowerPath = string.lower(path)
 
@@ -128,14 +181,93 @@ local function collectBlobPaths(tree)
         error("GitHub returned an unsafe path: " .. tostring(item.path), 0)
       end
 
-      if shouldSyncPath(item.path) then
-        paths[#paths + 1] = item.path
+      if item.path == MANIFEST_NAME then
+        error("Repository path conflicts with the sync manifest: " .. item.path, 0)
       end
+
+      paths[#paths + 1] = item.path
     end
   end
 
   table.sort(paths)
   return paths
+end
+
+local function selectSyncPaths(repoPaths)
+  local paths = {}
+
+  for _, repoPath in ipairs(repoPaths) do
+    if shouldSyncPath(repoPath) then
+      paths[#paths + 1] = repoPath
+    end
+  end
+
+  return paths
+end
+
+local function pathDepth(path)
+  local _, separators = string.gsub(path, "/", "")
+  return separators
+end
+
+local function collectCleanupPaths(previousPaths, repoPaths)
+  local seen = {}
+  local paths = {}
+
+  local function add(repoPath)
+    if not seen[repoPath] then
+      seen[repoPath] = true
+      paths[#paths + 1] = repoPath
+    end
+  end
+
+  -- The manifest catches files removed or renamed upstream. Current repository
+  -- paths also clean files that an older sync downloaded before a filter change.
+  for _, repoPath in ipairs(previousPaths) do
+    add(repoPath)
+  end
+  for _, repoPath in ipairs(repoPaths) do
+    add(repoPath)
+  end
+
+  table.sort(paths, function(left, right)
+    local leftDepth = pathDepth(left)
+    local rightDepth = pathDepth(right)
+    if leftDepth == rightDepth then
+      return left < right
+    end
+    return leftDepth > rightDepth
+  end)
+
+  return paths
+end
+
+local function deleteExistingFiles(paths, currentRepoPaths, targetRoot)
+  local currentFiles = {}
+  for _, repoPath in ipairs(currentRepoPaths) do
+    currentFiles[repoPath] = true
+  end
+
+  local deleted = 0
+  for _, repoPath in ipairs(paths) do
+    local targetPath = fs.combine(targetRoot, repoPath)
+    if fs.exists(targetPath) then
+      if fs.isDir(targetPath) then
+        if currentFiles[repoPath] then
+          local children = fs.list(targetPath)
+          if #children > 0 then
+            error("Refusing to replace non-empty directory with file: " .. targetPath, 0)
+          end
+          fs.delete(targetPath)
+        end
+      else
+        fs.delete(targetPath)
+        deleted = deleted + 1
+      end
+    end
+  end
+
+  return deleted
 end
 
 local apiUrl = "https://api.github.com/repos/"
@@ -161,7 +293,15 @@ if treeData.truncated then
   error("GitHub returned a truncated tree; refusing partial sync.", 0)
 end
 
-local paths = collectBlobPaths(treeData.tree)
+local repoPaths = collectBlobPaths(treeData.tree)
+local paths = selectSyncPaths(repoPaths)
+local manifestPath = fs.combine(targetRoot, MANIFEST_NAME)
+local previousPaths = readManifest(manifestPath)
+local cleanupPaths = collectCleanupPaths(previousPaths, repoPaths)
+
+print("Removing existing synced files...")
+local deleted = deleteExistingFiles(cleanupPaths, repoPaths, targetRoot)
+print("Removed " .. tostring(deleted) .. " files.")
 print("Syncing " .. tostring(#paths) .. " files into " .. fs.combine(targetRoot, "."))
 
 local rawBase = "https://raw.githubusercontent.com/"
@@ -189,6 +329,11 @@ for _, repoPath in ipairs(paths) do
 
   synced = synced + 1
   print("[" .. synced .. "/" .. #paths .. "] " .. repoPath)
+end
+
+local manifestOk, manifestErr = writeManifest(manifestPath, paths)
+if not manifestOk then
+  error("Could not write sync manifest: " .. tostring(manifestErr), 0)
 end
 
 print("Sync complete.")
