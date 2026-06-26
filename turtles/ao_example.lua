@@ -3,6 +3,18 @@
 -- This is not a mining task. It only shows how task code should receive the
 -- AO-scoped turtle wrapper instead of using raw turtle.forward().
 
+local args = { ... }
+
+local function usage()
+  print("Usage: ao_example")
+  print("Runs one guarded AO forward-move example.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
+end
+
 local runtime = dofile("ao_runtime")
 
 local ao = runtime.create({

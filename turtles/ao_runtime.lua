@@ -7,6 +7,14 @@
 -- - Guards attach to this runtime and participate in action planning/checking.
 -- - Movement is just one guard. It does not own the AO.
 
+local args = { ... }
+
+if args[1] == "-h" or args[1] == "--help" then
+  print("Usage: local runtime = dofile(\"ao_runtime\")")
+  print("Creates guarded AO-scoped turtle APIs.")
+  return true
+end
+
 local runtime = {}
 local unpackArgs = table.unpack or unpack
 

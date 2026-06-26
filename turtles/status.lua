@@ -1,6 +1,18 @@
 -- Non-moving turtle status report.
 -- Usage: status
 
+local args = { ... }
+
+local function usage()
+  print("Usage: status")
+  print("Shows turtle ID, fuel, and non-empty slots.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
+end
+
 print("Label: " .. tostring(os.getComputerLabel()))
 print("ID: " .. os.getComputerID())
 print("Fuel: " .. turtle.getFuelLevel() .. " / " .. turtle.getFuelLimit())

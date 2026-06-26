@@ -7,6 +7,14 @@
 -- - Return cost belongs to ao_runtime because task/AO context may know a more
 --   conservative route home than simple Manhattan distance.
 
+local args = { ... }
+
+if args[1] == "-h" or args[1] == "--help" then
+  print("Usage: dofile(\"ao_fuel_guard\").attach(ao)")
+  print("Blocks moves that would violate return-fuel reserve.")
+  return true
+end
+
 local fuel = {}
 
 function fuel.attach(ao)

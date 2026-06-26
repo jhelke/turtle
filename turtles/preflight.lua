@@ -6,6 +6,22 @@
 -- to the stock turtle tunnel program.
 
 local args = { ... }
+
+local function isHelpArg(value)
+  return value == "-h" or value == "--help"
+end
+
+local function usage()
+  print("Usage: preflight <distance>")
+  print("Example: preflight 150")
+  print("Checks turtle, fuel, inventory, and rear output.")
+end
+
+if isHelpArg(args[1]) then
+  usage()
+  return true
+end
+
 local rawDistance = args[1]
 local distance = tonumber(rawDistance)
 
@@ -117,8 +133,7 @@ if not turtle then
 end
 
 if not rawDistance then
-  print("Usage: preflight <distance>")
-  print("Example: preflight 150")
+  usage()
   return false
 end
 

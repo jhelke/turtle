@@ -5,6 +5,14 @@
 -- - It does not own fuel policy, persistence, digging, or task behavior.
 -- - It updates AO state only after raw turtle movement succeeds.
 
+local args = { ... }
+
+if args[1] == "-h" or args[1] == "--help" then
+  print("Usage: dofile(\"ao_movement_guard\").attach(ao)")
+  print("Tracks AO movement position and bounds.")
+  return true
+end
+
 local movement = {}
 
 local directions = { "north", "east", "south", "west" }

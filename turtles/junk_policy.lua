@@ -4,6 +4,14 @@
 --   local junk = dofile("junk_policy")
 --   local slot = junk.chooseDropSlot()
 
+local args = { ... }
+
+if args[1] == "-h" or args[1] == "--help" then
+  print("Usage: local junk = dofile(\"junk_policy\")")
+  print("Shared junk-slot selection module.")
+  return true
+end
+
 local junk = {}
 
 -- Keys are namespaces, values are item paths inside that namespace.

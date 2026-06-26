@@ -18,6 +18,8 @@ local function usage()
   print("  repo=" .. DEFAULT_REPO)
   print("  ref=" .. DEFAULT_REF)
   print("  target-dir=current directory")
+  print("")
+  print("Does not download or write .md/.txt docs.")
 end
 
 if args[1] == "-h" or args[1] == "--help" then
@@ -110,6 +112,13 @@ local function writeFile(path, body)
   return true
 end
 
+local function shouldSyncPath(path)
+  local lowerPath = string.lower(path)
+
+  return not string.find(lowerPath, "%.md$")
+    and not string.find(lowerPath, "%.txt$")
+end
+
 local function collectBlobPaths(tree)
   local paths = {}
 
@@ -119,7 +128,9 @@ local function collectBlobPaths(tree)
         error("GitHub returned an unsafe path: " .. tostring(item.path), 0)
       end
 
-      paths[#paths + 1] = item.path
+      if shouldSyncPath(item.path) then
+        paths[#paths + 1] = item.path
+      end
     end
   end
 

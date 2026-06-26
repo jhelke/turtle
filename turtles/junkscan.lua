@@ -1,6 +1,18 @@
 -- Show which inventory slots match junk_policy.
 -- Usage: junkscan
 
+local args = { ... }
+
+local function usage()
+  print("Usage: junkscan")
+  print("Reports inventory slots matching junk_policy.")
+end
+
+if args[1] == "-h" or args[1] == "--help" then
+  usage()
+  return true
+end
+
 local junk = dofile("junk_policy")
 
 print("Junk scan")
