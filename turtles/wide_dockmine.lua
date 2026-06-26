@@ -381,6 +381,20 @@ end
 
 local currentSideOffset = 0
 
+local function offsetAfterSideStep(direction)
+  if direction == side then
+    return currentSideOffset + 1
+  end
+
+  local offset = currentSideOffset - 1
+
+  if offset < 0 then
+    return 0
+  end
+
+  return offset
+end
+
 local function recordSideStep(direction, moved)
   if not moved then
     return
@@ -398,6 +412,8 @@ local function recordSideStep(direction, moved)
 end
 
 local function stepSide(direction)
+  local nextOffset = offsetAfterSideStep(direction)
+
   if direction == "right" then
     turtle.turnRight()
   else
@@ -409,7 +425,13 @@ local function stepSide(direction)
 
   if clearForward() and forwardRobust() then
     moved = true
-    ok = clearUp()
+
+    if nextOffset == 0 then
+      print("Skipping dock-up clearance on dock lane.")
+      ok = true
+    else
+      ok = clearUp()
+    end
   end
 
   if direction == "right" then
