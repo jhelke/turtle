@@ -861,7 +861,7 @@ local function inventoryHasItems(inventoryName)
   return false
 end
 
-local function cleanOutput(direction, dock, config)
+local function cleanOutput(dock, config)
   local storageChests = configuredStorageTargets(dock, config)
   local _, _, moveMessage = moveItemsToTargets(dock.outputChest, storageChests)
 
@@ -876,26 +876,44 @@ local function cleanOutput(direction, dock, config)
   end
 
   if hasItems then
-    return false, direction .. " output chest still has items after cleaning"
+    return false, "output chest still has items after cleaning"
   end
 
-  return true, "output clean"
+  return true
 end
 
 local function serviceDock(direction, dock, config)
-  local outputOk, outputMessage = cleanOutput(direction, dock, config)
+  local outputOk, outputMessage = cleanOutput(dock, config)
 
-  print(direction .. ": " .. outputMessage)
+  if outputOk then
+    if dock._outputServiceError then
+      print(direction .. ": output service recovered")
+    end
+
+    dock._outputServiceError = nil
+  elseif dock._outputServiceError ~= outputMessage then
+    dock._outputServiceError = outputMessage
+    print(direction .. ": output service failed: " .. outputMessage)
+    print("Check the " .. direction .. " output and storage chests.")
+  end
 
   return outputOk
 end
 
-local function serviceAll(config)
+local function serviceAll(config, reportResult)
   local allOk = true
 
   for _, dock in ipairs(config.activeDocks or {}) do
     local ok = serviceDock(dockDisplayName(dock), dock, config)
     allOk = allOk and ok
+  end
+
+  if reportResult then
+    if allOk then
+      print("Dock service complete: all outputs clean.")
+    else
+      print("Dock service failed. Fix the output/storage errors above.")
+    end
   end
 
   return allOk
@@ -1859,7 +1877,7 @@ local function main()
       return false
     end
 
-    return serviceAll(config)
+    return serviceAll(config, true)
   end
 
   local targetDistance = tonumber(args[1])
