@@ -22,8 +22,10 @@ return {
   areaId = "mine_01",
   protocol = "minecraft-cc-t:mining_area",
 
-  fuelItem = "minecraft:coal",
-  fuelUnitsPerItem = 80,
+  fuelItems = {
+    ["minecraft:coal"] = 80,
+    ["silentgear:netherwood_charcoal"] = 120,
+  },
   -- Job-start fuel staging asks the turtle for fuel/progress and supplies only
   -- the calculated item count. Set to 0 to disable managed fuel supply.
   fuelMaxItemsPerJob = 256,
@@ -52,7 +54,7 @@ return {
     },
   },
 
-  -- Fuel source storage. The controller pulls fuelItem from these.
+  -- Fuel source storage. The controller pulls allowed fuelItems from these.
   fuelStorage = {
     ["minecraft:chest_"] = {
       -- 12,

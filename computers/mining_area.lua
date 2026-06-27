@@ -14,8 +14,13 @@ local args = { ... }
 
 local DEFAULT_PROTOCOL = "minecraft-cc-t:mining_area"
 local DEFAULT_CONFIG = "mining_area_config"
-local DEFAULT_FUEL_ITEM = "minecraft:coal"
+local LEGACY_DEFAULT_FUEL_ITEM = "minecraft:coal"
+local DEFAULT_FUEL_ITEMS = {
+  ["minecraft:coal"] = 80,
+  ["silentgear:netherwood_charcoal"] = 120,
+}
 local DEFAULT_FUEL_MAX_ITEMS_PER_JOB = 256
+-- Used by legacy singular fuelItem configurations.
 local DEFAULT_FUEL_UNITS_PER_ITEM = 80
 local DEFAULT_FUEL_MARGIN = 32
 local DEFAULT_FUEL_QUERY_TIMEOUT = 5
@@ -144,6 +149,89 @@ local function inventoryNames(value)
   return names
 end
 
+local function fuelItemSpecs(value, fallbackUnits)
+  local specs = {}
+  local seen = {}
+
+  local function add(name, units)
+    if type(name) ~= "string" or name == "" or seen[name] then
+      return
+    end
+
+    seen[name] = true
+    specs[#specs + 1] = {
+      name = name,
+      units = tonumber(units),
+    }
+  end
+
+  if type(value) == "string" then
+    add(value, DEFAULT_FUEL_ITEMS[value] or fallbackUnits)
+  elseif type(value) == "table" then
+    for _, entry in ipairs(value) do
+      if type(entry) == "string" then
+        add(entry, DEFAULT_FUEL_ITEMS[entry] or fallbackUnits)
+      elseif type(entry) == "table" then
+        add(entry.name or entry[1], entry.units or entry.fuelUnits or entry[2])
+      end
+    end
+
+    for name, units in pairs(value) do
+      if type(name) == "string" then
+        add(name, units)
+      end
+    end
+  end
+
+  table.sort(specs, function(left, right)
+    local leftUnits = left.units or 0
+    local rightUnits = right.units or 0
+    if leftUnits == rightUnits then
+      return left.name < right.name
+    end
+    return leftUnits > rightUnits
+  end)
+
+  return specs
+end
+
+local function configuredFuelItems(dock, config)
+  local value
+  local fallbackUnits
+
+  if dock and dock.fuelItems ~= nil then
+    value = dock.fuelItems
+    fallbackUnits = dock.fuelUnitsPerItem or config.fuelUnitsPerItem
+  elseif dock and dock.fuelItem ~= nil then
+    value = dock.fuelItem
+    fallbackUnits = dock.fuelUnitsPerItem or config.fuelUnitsPerItem
+  elseif config.fuelItems ~= nil then
+    value = config.fuelItems
+    fallbackUnits = config.fuelUnitsPerItem
+  else
+    value = config.fuelItem
+    fallbackUnits = config.fuelUnitsPerItem
+  end
+
+  -- Existing configs used the singular coal default. Expand that legacy value
+  -- to the current default allowlist without requiring an in-game config edit.
+  if value == nil or value == LEGACY_DEFAULT_FUEL_ITEM then
+    value = DEFAULT_FUEL_ITEMS
+  end
+
+  return fuelItemSpecs(value, fallbackUnits or DEFAULT_FUEL_UNITS_PER_ITEM)
+end
+
+local function formatFuelItems(items)
+  local values = {}
+
+  for _, item in ipairs(items or {}) do
+    values[#values + 1] = item.name .. "=" .. tostring(item.units)
+  end
+
+  return formatList(values)
+end
+
 local function configuredStorageTargets(dock, config)
   if dock and (dock.storage ~= nil or dock.storageChests ~= nil) then
     return inventoryNames(dock.storage or dock.storageChests)
@@ -174,14 +262,6 @@ local function configuredFuelMaxItems(dock, config)
   end
 
   return tonumber(config.fuelTargetItems)
-end
-
-local function configuredFuelUnitsPerItem(dock, config)
-  if dock and dock.fuelUnitsPerItem ~= nil then
-    return tonumber(dock.fuelUnitsPerItem)
-  end
-
-  return tonumber(config.fuelUnitsPerItem)
 end
 
 local function configuredFuelMargin(dock, config)
@@ -252,7 +332,7 @@ local function makeDefaultConfig(configPath)
     configPath = configPath or DEFAULT_CONFIG,
     areaId = "mining_area_" .. os.getComputerID(),
     protocol = DEFAULT_PROTOCOL,
-    fuelItem = DEFAULT_FUEL_ITEM,
+    fuelItems = DEFAULT_FUEL_ITEMS,
     fuelMaxItemsPerJob = DEFAULT_FUEL_MAX_ITEMS_PER_JOB,
     fuelUnitsPerItem = DEFAULT_FUEL_UNITS_PER_ITEM,
     fuelMargin = DEFAULT_FUEL_MARGIN,
@@ -324,7 +404,9 @@ local function loadConfig(path)
   config.configPath = resolved
   config.areaId = config.areaId or ("mining_area_" .. os.getComputerID())
   config.protocol = config.protocol or DEFAULT_PROTOCOL
-  config.fuelItem = config.fuelItem or DEFAULT_FUEL_ITEM
+  if config.fuelItems == nil and config.fuelItem == nil then
+    config.fuelItems = DEFAULT_FUEL_ITEMS
+  end
   config.fuelTargetItems = tonumber(config.fuelTargetItems)
   config.fuelMaxItemsPerJob = tonumber(config.fuelMaxItemsPerJob)
 
@@ -668,6 +750,19 @@ local function validateDock(direction, dock, config)
   local fuelTarget = configuredFuelMaxItems(dock, config) or 0
 
   if fuelTarget > 0 then
+    local fuelItems = configuredFuelItems(dock, config)
+
+    if #fuelItems == 0 then
+      return false, direction .. " dock needs at least one fuelItems entry"
+    end
+
+    for _, fuelItem in ipairs(fuelItems) do
+      if not isPositiveWholeNumber(fuelItem.units) then
+        return false,
+          direction .. " fuel item " .. fuelItem.name .. " needs positive whole units"
+      end
+    end
+
     if type(dock.fuelChest) ~= "string" then
       return false, direction .. " dock fuelChest must be a peripheral name"
     end
@@ -683,6 +778,18 @@ local function validateDock(direction, dock, config)
 end
 
 local function validateConfig(config)
+  local fuelItems = configuredFuelItems(nil, config)
+
+  if #fuelItems == 0 then
+    return false, "fuelItems must contain at least one item name"
+  end
+
+  for _, fuelItem in ipairs(fuelItems) do
+    if not isPositiveWholeNumber(fuelItem.units) then
+      return false, "fuel item " .. fuelItem.name .. " needs positive whole units"
+    end
+  end
+
   if not isNonNegativeWholeNumber(config.fuelMaxItemsPerJob) then
     return false, "fuelMaxItemsPerJob must be a non-negative whole number"
   end
@@ -843,6 +950,28 @@ local function moveItemsToTargets(sourceName, targetNames, itemName, limit)
   end
 
   return movedTotal, wantedRemaining or 0
+end
+
+local function inspectFuelInventory(inventoryName, fuelItems)
+  local state = {
+    counts = {},
+    totalItems = 0,
+    totalUnits = 0,
+  }
+
+  for _, fuelItem in ipairs(fuelItems) do
+    local count, message = countItem(inventoryName, fuelItem.name)
+
+    if message then
+      return nil, message
+    end
+
+    state.counts[fuelItem.name] = count
+    state.totalItems = state.totalItems + count
+    state.totalUnits = state.totalUnits + count * fuelItem.units
+  end
+
+  return state
 end
 
 local function inventoryHasItems(inventoryName)
@@ -1172,12 +1301,12 @@ local function calculateJobFuelNeed(worker, report, config)
   }
 end
 
-local function calculateJobFuelItems(worker, config)
+local function calculateJobFuelPlan(worker, config)
   local maxItems = configuredFuelMaxItems(worker.dock, config) or 0
 
   if maxItems <= 0 then
     return {
-      requestedItems = 0,
+      neededFuel = 0,
       message = "fuel management disabled",
     }
   end
@@ -1193,19 +1322,13 @@ local function calculateJobFuelItems(worker, config)
 
   if currentFuel == math.huge or fuelLimit == math.huge then
     return {
-      requestedItems = 0,
+      neededFuel = 0,
       message = "turtle fuel is unlimited",
     }
   end
 
   if not currentFuel then
     return nil, "fuel report did not include numeric fuel"
-  end
-
-  local fuelUnitsPerItem = configuredFuelUnitsPerItem(worker.dock, config)
-
-  if not isPositiveWholeNumber(fuelUnitsPerItem) then
-    return nil, "fuelUnitsPerItem must be a positive whole number"
   end
 
   local need, needMessage = calculateJobFuelNeed(worker, report, config)
@@ -1222,7 +1345,6 @@ local function calculateJobFuelItems(worker, config)
 
   if need.totalFuel <= 0 then
     return {
-      requestedItems = 0,
       neededFuel = 0,
       targetFuel = 0,
       progress = need.progress,
@@ -1237,16 +1359,7 @@ local function calculateJobFuelItems(worker, config)
     neededFuel = 0
   end
 
-  local requestedItems = math.ceil(neededFuel / fuelUnitsPerItem)
-
-  if requestedItems > maxItems then
-    return nil,
-      "job needs " .. requestedItems .. " fuel items, above fuelMaxItemsPerJob "
-      .. tostring(maxItems)
-  end
-
   return {
-    requestedItems = requestedItems,
     neededFuel = neededFuel,
     targetFuel = targetFuel,
     currentFuel = currentFuel,
@@ -1254,81 +1367,113 @@ local function calculateJobFuelItems(worker, config)
     centerFuel = need.centerFuel,
     leftFuel = need.leftFuel,
     rightFuel = need.rightFuel,
-    message = "needs " .. requestedItems .. " fuel items",
+    message = "needs " .. neededFuel .. " fuel units",
   }
 end
 
-local function reconcileDockFuel(direction, dock, config, requestedItems)
-  local fuelItem = dock.fuelItem or config.fuelItem
-  local currentItems, countMessage = countItem(dock.fuelChest, fuelItem)
+local function reconcileDockFuel(direction, dock, config, neededFuel)
+  local fuelItems = configuredFuelItems(dock, config)
+  local fuelLabel = formatFuelItems(fuelItems)
+  local state, inspectMessage = inspectFuelInventory(dock.fuelChest, fuelItems)
 
-  if countMessage then
-    return false, countMessage
+  if not state then
+    return false, inspectMessage
   end
 
   local fuelSources = configuredFuelSources(dock, config)
+  local maxItems = configuredFuelMaxItems(dock, config) or 0
 
-  if currentItems > requestedItems then
-    local surplus = currentItems - requestedItems
-    local moved, remaining, moveMessage = moveItemsToTargets(
-      dock.fuelChest,
-      fuelSources,
-      fuelItem,
-      surplus
-    )
+  -- Return whole surplus items without dropping below the required fuel.
+  for index = #fuelItems, 1, -1 do
+    local fuelItem = fuelItems[index]
+    local removable = math.floor((state.totalUnits - neededFuel) / fuelItem.units)
+    local count = math.min(state.counts[fuelItem.name] or 0, removable)
 
-    if moveMessage then
-      return false, moveMessage
-    end
-
-    if remaining > 0 then
-      return false,
-        direction .. " dock fuel chest has " .. surplus .. " excess "
-        .. fuelItem .. "; moved back " .. moved .. ", still excess " .. remaining
-    end
-
-    currentItems = requestedItems
-  end
-
-  if currentItems < requestedItems then
-    local needed = requestedItems - currentItems
-    local moved = 0
-
-    for _, sourceName in ipairs(fuelSources) do
-      if needed <= 0 then
-        break
-      end
-
-      local sourceMoved, remaining, moveMessage = moveItemsToTargets(
-        sourceName,
-        { dock.fuelChest },
-        fuelItem,
-        needed
+    if count > 0 then
+      local moved, remaining, moveMessage = moveItemsToTargets(
+        dock.fuelChest,
+        fuelSources,
+        fuelItem.name,
+        count
       )
 
       if moveMessage then
         return false, moveMessage
       end
 
-      moved = moved + sourceMoved
-      needed = remaining
-    end
+      if remaining > 0 then
+        return false,
+          direction .. " could not return " .. remaining .. " surplus "
+          .. fuelItem.name
+      end
 
-    if needed > 0 then
-      return false,
-        direction .. " fuel short: requested " .. requestedItems .. " "
-        .. fuelItem .. ", moved " .. moved .. ", still need " .. needed
+      state.counts[fuelItem.name] = state.counts[fuelItem.name] - moved
+      state.totalItems = state.totalItems - moved
+      state.totalUnits = state.totalUnits - moved * fuelItem.units
     end
   end
 
-  return true, "staged " .. requestedItems .. " " .. fuelItem .. " for job"
+  -- Prefer higher-value fuel, then fall back through the configured mapping.
+  if state.totalUnits < neededFuel then
+    for _, fuelItem in ipairs(fuelItems) do
+      for _, sourceName in ipairs(fuelSources) do
+        if state.totalUnits >= neededFuel or state.totalItems >= maxItems then
+          break
+        end
+
+        local missingUnits = neededFuel - state.totalUnits
+        local itemCapacity = maxItems - state.totalItems
+        local requestedItems = math.min(
+          itemCapacity,
+          math.ceil(missingUnits / fuelItem.units)
+        )
+
+        local moved, _, moveMessage = moveItemsToTargets(
+          sourceName,
+          { dock.fuelChest },
+          fuelItem.name,
+          requestedItems
+        )
+
+        if moveMessage then
+          return false, moveMessage
+        end
+
+        state.counts[fuelItem.name] = (state.counts[fuelItem.name] or 0) + moved
+        state.totalItems = state.totalItems + moved
+        state.totalUnits = state.totalUnits + moved * fuelItem.units
+      end
+
+      if state.totalUnits >= neededFuel then
+        break
+      end
+    end
+
+  end
+
+  if state.totalUnits < neededFuel then
+    return false,
+      direction .. " fuel short: need " .. neededFuel .. " units, staged "
+      .. state.totalUnits .. " in " .. state.totalItems .. "/" .. maxItems
+      .. " items (" .. fuelLabel .. ")"
+  end
+
+  if state.totalItems > maxItems then
+    return false,
+      direction .. " fuel needs " .. state.totalItems
+      .. " items, above fuelMaxItemsPerJob " .. maxItems
+  end
+
+  return true,
+    "staged " .. state.totalUnits .. " fuel units in "
+    .. state.totalItems .. " items"
 end
 
 local function prepareJobFuel(workers, config)
   local allOk = true
 
   for _, worker in ipairs(workers) do
-    local plan, planMessage = calculateJobFuelItems(worker, config)
+    local plan, planMessage = calculateJobFuelPlan(worker, config)
 
     if not plan then
       worker.state = "failed"
@@ -1344,7 +1489,7 @@ local function prepareJobFuel(workers, config)
         worker.direction,
         worker.dock,
         config,
-        plan.requestedItems
+        plan.neededFuel
       )
 
       worker.lastMessage = fuelMessage
@@ -1743,7 +1888,7 @@ local function runMiningArea(config, targetDistance)
   print("Config: " .. config.configPath)
   print("Protocol: " .. config.protocol)
   print("Target distance: " .. targetDistance)
-  print("Fuel item: " .. config.fuelItem)
+  print("Fuel items: " .. formatFuelItems(configuredFuelItems(nil, config)))
   print("Storage: " .. formatList(configuredStorageTargets(nil, config)))
   print("Default side lanes: left=" .. tostring(config.leftLanes)
     .. " right=" .. tostring(config.rightLanes))
