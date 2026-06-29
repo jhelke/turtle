@@ -3,14 +3,16 @@
 --   mining_worker [protocol] [controller-id]
 --
 -- Install this next to dockmine on each managed mining turtle. The worker waits
--- for mine-distance jobs, runs dockmine until the requested target progress is
--- reached, and reports status back to the managed-area computer.
+-- for bounded lane jobs, persists lane progress, and reports status back to the
+-- managed-area computer.
 
 local args = { ... }
 
 local DEFAULT_PROTOCOL = "minecraft-cc-t:mining_area"
 local DEFAULT_HEARTBEAT_INTERVAL = 5
 local PROGRESS_FILE = ".dockmine_progress"
+local LANE_PROGRESS_FILE = ".mining_lane_progress"
+local activeLane = nil
 
 local function usage()
   print("Usage: mining_worker [protocol] [controller-id]")
@@ -58,6 +60,142 @@ local function readProgress()
   return tonumber(content) or 0
 end
 
+local function writeProgress(progress)
+  local file = fs.open(PROGRESS_FILE, "w")
+
+  if not file then
+    return false, "could not write " .. PROGRESS_FILE
+  end
+
+  file.write(tostring(progress))
+  file.close()
+  return true
+end
+
+local function loadLaneProgress()
+  local candidates = {
+    LANE_PROGRESS_FILE,
+    LANE_PROGRESS_FILE .. ".tmp",
+    LANE_PROGRESS_FILE .. ".bak",
+  }
+
+  for _, path in ipairs(candidates) do
+    if fs.exists(path) then
+      local file = fs.open(path, "r")
+
+      if file then
+        local content = file.readAll()
+        file.close()
+
+        local data = textutils.unserialize(content)
+
+        if type(data) == "table" and type(data.lanes) == "table" then
+          return data
+        end
+      end
+    end
+  end
+
+  return {
+    version = 1,
+    lanes = {},
+  }
+end
+
+local function saveLaneProgress(data)
+  local tempPath = LANE_PROGRESS_FILE .. ".tmp"
+  local backupPath = LANE_PROGRESS_FILE .. ".bak"
+  local file = fs.open(tempPath, "w")
+
+  if not file then
+    return false, "could not write " .. tempPath
+  end
+
+  file.write(textutils.serialize(data))
+  file.close()
+
+  if fs.exists(backupPath) then
+    fs.delete(backupPath)
+  end
+
+  if fs.exists(LANE_PROGRESS_FILE) then
+    fs.move(LANE_PROGRESS_FILE, backupPath)
+  end
+
+  local moved, moveMessage = pcall(fs.move, tempPath, LANE_PROGRESS_FILE)
+
+  if not moved then
+    if fs.exists(backupPath) and not fs.exists(LANE_PROGRESS_FILE) then
+      fs.move(backupPath, LANE_PROGRESS_FILE)
+    end
+
+    return false, "could not replace " .. LANE_PROGRESS_FILE
+      .. ": " .. tostring(moveMessage)
+  end
+
+  if fs.exists(backupPath) then
+    fs.delete(backupPath)
+  end
+
+  return true
+end
+
+local function readSideLaneProgress(laneId)
+  if type(laneId) ~= "string" or laneId == "" then
+    return 0
+  end
+
+  local entry = loadLaneProgress().lanes[laneId]
+  return type(entry) == "table" and (tonumber(entry.clearedThrough) or 0) or 0
+end
+
+local function writeSideLaneProgress(laneId, laneOffset, targetDistance, clearedThrough)
+  local data = loadLaneProgress()
+  local previous = data.lanes[laneId]
+  local previousProgress = type(previous) == "table"
+    and (tonumber(previous.clearedThrough) or 0)
+    or 0
+
+  if clearedThrough < previousProgress then
+    clearedThrough = previousProgress
+  end
+
+  data.lanes[laneId] = {
+    laneId = laneId,
+    laneOffset = laneOffset,
+    targetDistance = targetDistance,
+    clearedThrough = clearedThrough,
+  }
+
+  return saveLaneProgress(data)
+end
+
+local function laneCheckpoint(job)
+  local params = job and job.params or {}
+  local laneOffset = tonumber(params.laneOffset or 0) or 0
+  local laneId = params.laneId
+  local clearedThrough
+
+  if activeLane and job and activeLane.jobId == job.jobId then
+    if laneOffset == 0 then
+      clearedThrough = math.min(
+        tonumber(params.targetDistance or params.laneLength) or math.huge,
+        readProgress()
+      )
+      activeLane.clearedThrough = clearedThrough
+    else
+      clearedThrough = activeLane.clearedThrough
+    end
+  elseif laneOffset == 0 then
+    clearedThrough = readProgress()
+  else
+    clearedThrough = readSideLaneProgress(laneId)
+  end
+
+  return laneId, laneOffset, clearedThrough or 0,
+    tonumber(params.targetDistance or params.laneLength)
+end
+
 local function fuelLevel()
   local level = turtle.getFuelLevel()
 
@@ -69,6 +207,8 @@ local function fuelLevel()
 end
 
 local function makeStatus(job, status, message)
+  local laneId, laneOffset, clearedThrough, targetDistance = laneCheckpoint(job)
+
   return {
     type = "turtle-status",
     turtleId = os.getComputerID(),
@@ -79,6 +219,10 @@ local function makeStatus(job, status, message)
     fuel = fuelLevel(),
     fuelLimit = turtle.getFuelLimit(),
     progress = readProgress(),
+    laneId = laneId,
+    laneOffset = laneOffset,
+    clearedThrough = clearedThrough,
+    targetDistance = targetDistance,
   }
 end
 
@@ -113,6 +257,8 @@ local function sendStatus(targetId, job, status, message)
 end
 
 local function sendError(targetId, job, code, message)
+  local laneId, laneOffset, clearedThrough, targetDistance = laneCheckpoint(job)
+
   rednet.send(targetId, {
     type = "error",
     turtleId = os.getComputerID(),
@@ -121,6 +267,10 @@ local function sendError(targetId, job, code, message)
     message = message,
     fuel = fuelLevel(),
     progress = readProgress(),
+    laneId = laneId,
+    laneOffset = laneOffset,
+    clearedThrough = clearedThrough,
+    targetDistance = targetDistance,
   }, protocol)
 
   sendStatus(targetId, job, "failed", message)
@@ -218,56 +368,46 @@ local function runDockmine(program, blocksToMine, fuelMargin)
   return true
 end
 
-local function runWideDockmine(program, dockmineProgram, depth, lanes, side, fuelMargin)
-  if lanes <= 0 then
-    return true
-  end
-
-  -- Offset is side-relative in wide_dockmine. With the dock lane already mined,
-  -- offset 1 means "start at the first lane to the requested side".
-  local sideRelativeOffset = "1"
+local function runWideDockmine(
+  program,
+  dockmineProgram,
+  targetDistance,
+  laneOffset,
+  resumeFrom,
+  fuelMargin,
+  onProgress
+)
   local chunk, loadErr = loadfile(program)
 
   if not chunk then
     return false, "could not load wide_dockmine: " .. tostring(loadErr)
   end
 
-  local ok, result
-
-  if fuelMargin then
-    ok, result = pcall(
-      chunk,
-      tostring(depth),
-      tostring(lanes),
-      side,
-      tostring(fuelMargin),
-      "offset",
-      sideRelativeOffset,
-      "dockmine",
-      dockmineProgram
-    )
-  else
-    ok, result = pcall(
-      chunk,
-      tostring(depth),
-      tostring(lanes),
-      side,
-      "offset",
-      sideRelativeOffset,
-      "dockmine",
-      dockmineProgram
-    )
-  end
+  local ok, result = pcall(chunk, {
+    mode = "managed-lane",
+    targetDepth = targetDistance,
+    laneOffset = laneOffset,
+    resumeFrom = resumeFrom,
+    fuelMargin = fuelMargin,
+    dockminePath = dockmineProgram,
+    onProgress = onProgress,
+  })
 
   if not ok then
     return false, "wide_dockmine crashed: " .. tostring(result)
   end
 
-  if result == false then
-    return false, "wide_dockmine returned failure"
+  if result == false or type(result) ~= "table" or result.ok == false then
+    local message = type(result) == "table" and result.message
+      or "wide_dockmine returned failure"
+    return false, message
   end
 
-  return true
+  if not result.complete then
+    return false, result.message or "wide_dockmine did not complete lane"
+  end
+
+  return true, result.message
 end
 
 local function isSupportedJob(job)
@@ -275,9 +415,7 @@ local function isSupportedJob(job)
     return false, "not a job message"
   end
 
-  if job.task ~= "mine-distance"
-    and job.task ~= "mine-lane"
-    and job.task ~= "mine-area" then
+  if job.task ~= "mine-distance" and job.task ~= "mine-lane" then
     return false, "unsupported task: " .. tostring(job.task)
   end
 
@@ -286,10 +424,15 @@ local function isSupportedJob(job)
   end
 
   local params = job.params or {}
-  local laneOffset = tonumber(params.laneOffset or 0) or 0
+  local laneOffset = tonumber(params.laneOffset or 0)
 
-  if laneOffset ~= 0 then
-    return false, "this worker only supports dock laneOffset 0"
+  if not laneOffset or laneOffset ~= math.floor(laneOffset) then
+    return false, "laneOffset must be a whole number"
+  end
+
+  if job.task == "mine-lane"
+    and (type(params.laneId) ~= "string" or params.laneId == "") then
+    return false, "mine-lane job requires laneId"
   end
 
   return true
@@ -306,22 +449,6 @@ local function targetDistanceForJob(job)
   end
 
   return targetDistance
-end
-
-local function sideLaneCountsForJob(job)
-  local params = job.params or {}
-  local leftLanes = tonumber(params.leftLanes or 0) or 0
-  local rightLanes = tonumber(params.rightLanes or 0) or 0
-
-  if leftLanes < 0 or leftLanes ~= math.floor(leftLanes) then
-    return nil, nil, "leftLanes must be a non-negative whole number"
-  end
-
-  if rightLanes < 0 or rightLanes ~= math.floor(rightLanes) then
-    return nil, nil, "rightLanes must be a non-negative whole number"
-  end
-
-  return leftLanes, rightLanes
 end
 
 local function runJob(controller, job)
@@ -347,20 +474,57 @@ local function runJob(controller, job)
   end
 
   local fuelMargin = tonumber(params.fuelMargin)
-  local leftLanes, rightLanes, sideMessage = sideLaneCountsForJob(job)
-
-  if not leftLanes then
-    sendError(controller, job, "invalid_side_lanes", sideMessage)
-    return
-  end
-
-  local currentProgress = readProgress()
+  local laneOffset = tonumber(params.laneOffset or 0) or 0
+  local laneId = params.laneId
+  local managerProgress = tonumber(params.resumeFrom) or 0
+  local localProgress = laneOffset == 0
+    and readProgress()
+    or readSideLaneProgress(laneId)
+  local currentProgress = math.min(
+    targetDistance,
+    math.max(managerProgress, localProgress)
+  )
   local remaining = targetDistance - currentProgress
 
-  sendStatus(controller, job, "running", "accepted target " .. targetDistance)
+  if laneOffset == 0 and currentProgress > localProgress then
+    local saved, saveMessage = writeProgress(currentProgress)
 
-  if remaining <= 0 and job.task ~= "mine-area" then
-    sendStatus(controller, job, "complete", "target already reached")
+    if not saved then
+      sendError(controller, job, "checkpoint_failed", saveMessage)
+      return
+    end
+  elseif laneOffset ~= 0 and currentProgress > localProgress then
+    local saved, saveMessage = writeSideLaneProgress(
+      laneId,
+      laneOffset,
+      targetDistance,
+      currentProgress
+    )
+
+    if not saved then
+      sendError(controller, job, "checkpoint_failed", saveMessage)
+      return
+    end
+  end
+
+  activeLane = {
+    jobId = job.jobId,
+    laneId = laneId,
+    laneOffset = laneOffset,
+    clearedThrough = currentProgress,
+    targetDistance = targetDistance,
+  }
+
+  sendStatus(
+    controller,
+    job,
+    "running",
+    "accepted lane " .. laneOffset .. " at " .. currentProgress .. "/" .. targetDistance
+  )
+
+  if remaining <= 0 then
+    sendStatus(controller, job, "complete", "lane target already reached")
+    activeLane = nil
     return
   end
 
@@ -368,16 +532,18 @@ local function runJob(controller, job)
 
   if not dockmineProgram then
     sendError(controller, job, "missing_program", "dockmine is not installed")
+    activeLane = nil
     return
   end
 
   local wideDockmineProgram = nil
 
-  if job.task == "mine-area" and (leftLanes > 0 or rightLanes > 0) then
+  if laneOffset ~= 0 then
     wideDockmineProgram = resolveWideDockmine()
 
     if not wideDockmineProgram then
       sendError(controller, job, "missing_program", "wide_dockmine is not installed")
+      activeLane = nil
       return
     end
   end
@@ -390,32 +556,35 @@ local function runJob(controller, job)
     jobOk = true
     jobMessage = "complete"
 
-    if remaining > 0 then
-      sendStatus(controller, job, "running", "mining dock lane to target " .. targetDistance)
+    if laneOffset == 0 then
+      sendStatus(controller, job, "running", "mining center lane")
       jobOk, jobMessage = runDockmine(dockmineProgram, remaining, fuelMargin)
-    end
+      activeLane.clearedThrough = readProgress()
+    else
+      local function checkpoint(clearedThrough)
+        local saved, saveMessage = writeSideLaneProgress(
+          laneId,
+          laneOffset,
+          targetDistance,
+          clearedThrough
+        )
 
-    if jobOk and job.task == "mine-area" and leftLanes > 0 then
-      sendStatus(controller, job, "running", "mining " .. leftLanes .. " lanes left")
+        if saved then
+          activeLane.clearedThrough = clearedThrough
+        end
+
+        return saved, saveMessage
+      end
+
+      sendStatus(controller, job, "running", "mining lane " .. laneOffset)
       jobOk, jobMessage = runWideDockmine(
         wideDockmineProgram,
         dockmineProgram,
         targetDistance,
-        leftLanes,
-        "left",
-        fuelMargin
-      )
-    end
-
-    if jobOk and job.task == "mine-area" and rightLanes > 0 then
-      sendStatus(controller, job, "running", "mining " .. rightLanes .. " lanes right")
-      jobOk, jobMessage = runWideDockmine(
-        wideDockmineProgram,
-        dockmineProgram,
-        targetDistance,
-        rightLanes,
-        "right",
-        fuelMargin
+        laneOffset,
+        currentProgress,
+        fuelMargin,
+        checkpoint
       )
     end
 
@@ -424,26 +593,22 @@ local function runJob(controller, job)
 
   local function heartbeat()
     while not done do
-      sendStatus(controller, job, "running", "mining area to target " .. targetDistance)
+      sendStatus(controller, job, "running", "lane " .. laneOffset
+        .. " at " .. activeLane.clearedThrough .. "/" .. targetDistance)
       sleep(heartbeatInterval)
     end
   end
 
   parallel.waitForAny(runner, heartbeat)
 
-  local finalProgress = readProgress()
+  local finalProgress = math.min(
+    targetDistance,
+    laneOffset == 0 and readProgress() or readSideLaneProgress(laneId)
+  )
+  activeLane.clearedThrough = finalProgress
 
   if jobOk and finalProgress >= targetDistance then
-    if job.task == "mine-area" then
-      sendStatus(
-        controller,
-        job,
-        "complete",
-        "area target reached: center, " .. leftLanes .. " left, " .. rightLanes .. " right"
-      )
-    else
-      sendStatus(controller, job, "complete", "target reached")
-    end
+    sendStatus(controller, job, "complete", "lane target reached")
   elseif jobOk then
     sendError(
       controller,
@@ -454,6 +619,8 @@ local function runJob(controller, job)
   else
     sendError(controller, job, "dockmine_failed", jobMessage)
   end
+
+  activeLane = nil
 end
 
 local function main()

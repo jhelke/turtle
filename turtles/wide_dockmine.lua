@@ -21,6 +21,7 @@
 -- - dockmine.lua is called only in script mode as a movement/mining primitive.
 
 local args = { ... }
+local managedTask = type(args[1]) == "table" and args[1] or nil
 
 local depth = tonumber(args[1])
 local width = tonumber(args[2])
@@ -29,6 +30,17 @@ local margin = 32
 local offset = 0
 local dockminePath = nil
 local argError = nil
+
+if managedTask and managedTask.mode == "managed-lane" then
+  local laneOffset = tonumber(managedTask.laneOffset)
+
+  depth = tonumber(managedTask.targetDepth)
+  width = 1
+  margin = tonumber(managedTask.fuelMargin) or margin
+  offset = laneOffset and math.abs(laneOffset) or nil
+  side = laneOffset and laneOffset < 0 and "left" or "right"
+  dockminePath = managedTask.dockminePath
+end
 
 local function usage()
   print("Usage: wide_dockmine <depth> <width> [right|left] [fuel-margin] [offset <lanes>]")
@@ -514,7 +526,7 @@ local function recordSideStep(direction, moved)
   end
 end
 
-local function stepSide(direction)
+local function stepSide(direction, quiet)
   local nextOffset = offsetAfterSideStep(direction)
 
   if direction == "right" then
@@ -530,7 +542,9 @@ local function stepSide(direction)
     moved = true
 
     if nextOffset == 0 then
-      print("Skipping dock-up clearance on dock lane.")
+      if not quiet then
+        print("Skipping dock-up clearance on dock lane.")
+      end
       ok = true
     else
       ok = clearUp()
@@ -546,11 +560,13 @@ local function stepSide(direction)
   return ok, moved
 end
 
-local function moveSideSteps(direction, count, label)
+local function moveSideSteps(direction, count, label, quiet)
   for step = 1, count do
-    print(label .. ": " .. step .. "/" .. count)
+    if not quiet then
+      print(label .. ": " .. step .. "/" .. count)
+    end
 
-    local ok, moved = stepSide(direction)
+    local ok, moved = stepSide(direction, quiet)
 
     recordSideStep(direction, moved)
 
@@ -640,7 +656,7 @@ local function resolveDockmine()
   return nil
 end
 
-local function runDockmine(program, lane, run)
+local function runDockmine(program, lane, run, resumeFrom, onProgress)
   print("")
   print("Starting lane " .. lane .. " (" .. run .. "/" .. width .. ")")
   print("Lane depth: " .. depth)
@@ -652,7 +668,18 @@ local function runDockmine(program, lane, run)
     return false
   end
 
-  local ok, result = pcall(chunk, tostring(depth), "script")
+  local ok, result
+
+  if resumeFrom ~= nil then
+    ok, result = pcall(chunk, {
+      mode = "managed-lane",
+      targetDepth = depth,
+      resumeFrom = resumeFrom,
+      onProgress = onProgress,
+    })
+  else
+    ok, result = pcall(chunk, tostring(depth), "script")
+  end
 
   if not ok then
     print("dockmine.lua crashed: " .. tostring(result))
@@ -664,13 +691,187 @@ local function runDockmine(program, lane, run)
     return false
   end
 
-  return true
+  if type(result) == "table" and result.ok == false then
+    print("dockmine.lua stopped: " .. tostring(result.message))
+    return false, result.message, result
+  end
+
+  return true, nil, result
+end
+
+local function managedLaneResult(ok, complete, clearedThrough, message)
+  return {
+    ok = ok,
+    complete = complete,
+    clearedThrough = clearedThrough,
+    message = message,
+  }
+end
+
+local function runManagedLane()
+  local laneOffset = tonumber(managedTask.laneOffset)
+  local resumeFrom = tonumber(managedTask.resumeFrom) or 0
+  local onProgress = managedTask.onProgress
+
+  if not isPositiveWholeNumber(depth) then
+    return managedLaneResult(false, false, resumeFrom, "invalid target depth")
+  end
+
+  if not laneOffset
+    or laneOffset == 0
+    or laneOffset ~= math.floor(laneOffset) then
+    return managedLaneResult(false, false, resumeFrom, "invalid side lane offset")
+  end
+
+  if not isNonNegativeWholeNumber(resumeFrom) or resumeFrom > depth then
+    return managedLaneResult(false, false, resumeFrom, "invalid resume depth")
+  end
+
+  if margin < 0 or margin ~= math.floor(margin) then
+    return managedLaneResult(false, false, resumeFrom, "invalid fuel margin")
+  end
+
+  if onProgress ~= nil and type(onProgress) ~= "function" then
+    return managedLaneResult(false, false, resumeFrom, "invalid progress callback")
+  end
+
+  local dockmineProgram = resolveDockmine()
+
+  if not dockmineProgram then
+    return managedLaneResult(false, false, resumeFrom, "dockmine is not installed")
+  end
+
+  local clearedThrough = resumeFrom
+  local noProgressPasses = 0
+
+  print("Managed lane offset " .. laneOffset
+    .. " depth " .. clearedThrough .. "/" .. depth)
+
+  while clearedThrough < depth do
+    if not serviceDock() then
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        "could not service dock"
+      )
+    end
+
+    local requiredFuel = offset * 2 + depth * 2 + margin
+
+    if not ensureFuel(requiredFuel, "for lane offset " .. laneOffset) then
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        "not enough fuel for lane"
+      )
+    end
+
+    if not moveSideSteps(side, offset, "Moving " .. side .. " to lane", true) then
+      local returned = moveSideSteps(
+        oppositeSide(side),
+        currentSideOffset,
+        "Returning to dock lane",
+        true
+      )
+
+      if returned then
+        unloadBehind()
+      end
+
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        returned and "could not reach managed lane" or "could not return to dock lane"
+      )
+    end
+
+    local before = clearedThrough
+    local laneOk, laneMessage, laneResult = runDockmine(
+      dockmineProgram,
+      offset,
+      1,
+      clearedThrough,
+      onProgress
+    )
+
+    if type(laneResult) == "table" then
+      clearedThrough = tonumber(laneResult.clearedThrough) or clearedThrough
+    end
+
+    if not moveSideSteps(
+      oppositeSide(side),
+      currentSideOffset,
+      "Returning to dock lane",
+      true
+    ) then
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        "could not return to dock lane"
+      )
+    end
+
+    if not unloadBehind() then
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        "could not unload at dock"
+      )
+    end
+
+    if not laneOk then
+      return managedLaneResult(
+        false,
+        false,
+        clearedThrough,
+        laneMessage or "lane mining failed"
+      )
+    end
+
+    if type(laneResult) == "table" and laneResult.complete then
+      return managedLaneResult(true, true, clearedThrough, "lane target reached")
+    end
+
+    if clearedThrough <= before then
+      noProgressPasses = noProgressPasses + 1
+
+      if noProgressPasses < 3 then
+        print("Lane traversal filled inventory; servicing dock before retry.")
+      else
+        return managedLaneResult(
+          false,
+          false,
+          clearedThrough,
+          "lane made no checkpoint progress after repeated dock service"
+        )
+      end
+    else
+      noProgressPasses = 0
+    end
+
+    print("Lane paused for dock service at " .. clearedThrough .. "/" .. depth)
+  end
+
+  return managedLaneResult(true, true, clearedThrough, "lane target already reached")
 end
 
 local seenSide = false
 local seenMargin = false
 local seenOffset = false
 local argIndex = 3
+
+if managedTask then
+  if managedTask.mode ~= "managed-lane" then
+    return managedLaneResult(false, false, 0, "unsupported internal task")
+  end
+
+  return runManagedLane()
+end
 
 while args[argIndex] do
   local arg = args[argIndex]

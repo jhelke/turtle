@@ -26,14 +26,14 @@ return {
     ["minecraft:coal"] = 80,
     ["silentgear:netherwood_charcoal"] = 120,
   },
-  -- Job-start fuel staging asks the turtle for fuel/progress and supplies only
+  -- Campaign-start fuel staging asks the turtle for fuel/progress and supplies
   -- the calculated item count. Set to 0 to disable managed fuel supply.
   fuelMaxItemsPerJob = 256,
   fuelMargin = 32,
   fuelQueryTimeout = 5,
 
-  -- mining_area <depth> mines the dock lane first, then these side lanes.
-  -- Set both to 0 to keep the old single-lane behavior.
+  -- mining_area <depth> queues the dock lane, then alternates these side lanes.
+  -- Set both to 0 for center-lane-only behavior.
   leftLanes = 20,
   rightLanes = 20,
 
@@ -41,6 +41,7 @@ return {
   statusTimeout = 45,
   heartbeatInterval = 5,
   dockRegistryFile = "mining_area_docks",
+  laneCheckpointFile = "mining_area_lane_checkpoints",
 
   -- Mined output storage.
   storage = {

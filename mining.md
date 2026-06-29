@@ -128,10 +128,9 @@ The managed area should own lane alternation:
 The turtle should not own the whole campaign. It should execute one lane job and
 return a result.
 
-The first managed-area mining implementation is simpler than the later lane
-queue. It manages one or more fixed dock turtles and sends each enabled turtle
-one absolute target-distance job. Four cardinal docks are the scaling target,
-but one enabled dock is enough for the first managed-area session:
+Managed-area mining uses a persisted lane queue for one or more fixed dock
+turtles. Four cardinal docks are the scaling target, but one enabled dock is
+enough:
 
 ```lua
 {
@@ -165,16 +164,25 @@ each mining turtle:
 ```
 
 Start `mining_worker` on each turtle, then run `mining_area <distance>` on the
-computer. By default, one managed job mines the dock lane first, then 20 lanes
-left from the dock position, then 20 lanes right from the dock position. Set
-`leftLanes = 0` and `rightLanes = 0` in `mining_area_config` to keep the old
-single-lane behavior.
+computer. By default, the manager queues the dock lane followed by alternating
+bounded lanes left and right. It sends only one lane job per turtle at a time.
+Set `leftLanes = 0` and `rightLanes = 0` in `mining_area_config` for only the
+center lane.
 
-At the start of each job, the computer asks the worker for its current
-fuel/progress, calculates the fuel items needed for that target and lane scope,
-and stages only that amount in the dock fuel chest. The turtle still handles
-local movement, mining, unloading from its inventory, and refuelling from the
-dock fuel chest below it.
+Lane progress is persisted in `mining_area_lane_checkpoints` on the manager and
+`.mining_lane_progress` on the turtle. Each side-lane step is checkpointed only
+after its full 1-wide by 2-high section is clear. On restart, the worker uses the
+newer manager/turtle checkpoint, traverses the cleared prefix, and resumes.
+
+Each side lane returns to the real dock and unloads before the next lane job.
+If inventory fills within one lane, the turtle returns to the dock, unloads,
+and resumes that same lane from its checkpoint. Run `mining_area progress` to
+inspect the manager ledger.
+
+Before dispatching a campaign, the computer asks the worker for its current
+center progress and fuel, calculates the fuel needed for the pending lane
+queue, and stages that amount in the dock fuel chest. The turtle still handles
+local movement, mining, unloading, and refuelling from the dock fuel chest.
 
 For creative-mode tests where turtle fuel is unlimited, set
 `fuelMaxItemsPerJob = 0` in `mining_area_config` to disable managed fuel supply.
@@ -203,9 +211,12 @@ Example lane job:
   ao = "dock_a",
   heading = "east",
   params = {
+    laneId = "mine_01/dock_a/lane/-8",
     laneOffset = -8,
+    resumeFrom = 64,
+    targetDistance = 150,
     laneLength = 150,
-    laneWidth = 3,
+    laneWidth = 1,
     laneHeight = 2,
   },
 }

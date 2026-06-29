@@ -21,6 +21,7 @@
 -- GLOBALS
 
 local args = { ... }
+local internalTask = type(args[1]) == "table" and args[1] or nil
 local maxNewBlocks = nil
 local margin = 32
 local scriptMode = false
@@ -538,6 +539,136 @@ local function runScriptMode(depth)
   return true
 end
 
+local function managedScriptResult(ok, complete, clearedThrough, message)
+  return {
+    ok = ok,
+    complete = complete,
+    clearedThrough = clearedThrough,
+    message = message,
+  }
+end
+
+local function returnManagedScript(moved, ok, complete, clearedThrough, message)
+  if moved > 0 and not returnHome(moved) then
+    print("Could not return to lane entrance. Manual rescue needed.")
+    return managedScriptResult(
+      false,
+      false,
+      clearedThrough,
+      "could not return to lane entrance"
+    )
+  end
+
+  return managedScriptResult(ok, complete, clearedThrough, message)
+end
+
+-- Internal contract used by wide_dockmine for one resumable managed lane.
+-- The caller owns dock service and lateral movement. This primitive starts and
+-- ends at the lane entrance and checkpoints only fully cleared 1x2 steps.
+local function runManagedScriptMode(task)
+  local targetDepth = tonumber(task.targetDepth)
+  local resumeFrom = tonumber(task.resumeFrom) or 0
+  local onProgress = task.onProgress
+
+  if not targetDepth
+    or targetDepth < 1
+    or targetDepth ~= math.floor(targetDepth) then
+    return managedScriptResult(false, false, resumeFrom, "invalid target depth")
+  end
+
+  if resumeFrom < 0
+    or resumeFrom > targetDepth
+    or resumeFrom ~= math.floor(resumeFrom) then
+    return managedScriptResult(false, false, resumeFrom, "invalid resume depth")
+  end
+
+  if onProgress ~= nil and type(onProgress) ~= "function" then
+    return managedScriptResult(false, false, resumeFrom, "invalid progress callback")
+  end
+
+  local moved = 0
+  local clearedThrough = resumeFrom
+
+  print("Lane depth " .. resumeFrom .. "/" .. targetDepth)
+
+  for step = 1, resumeFrom do
+    if not clearForward() or not forwardRobust() then
+      return returnManagedScript(
+        moved,
+        false,
+        false,
+        clearedThrough,
+        "could not traverse cleared lane at " .. step
+      )
+    end
+
+    moved = moved + 1
+
+    if not clearUp() then
+      return returnManagedScript(
+        moved,
+        false,
+        false,
+        clearedThrough,
+        "could not restore cleared lane height at " .. step
+      )
+    end
+  end
+
+  for step = resumeFrom + 1, targetDepth do
+    if emptySlotCount() < 2 then
+      return returnManagedScript(
+        moved,
+        true,
+        false,
+        clearedThrough,
+        "inventory service required"
+      )
+    end
+
+    local stepOk, didMove = mineOneStep()
+
+    if didMove then
+      moved = moved + 1
+    end
+
+    if not stepOk then
+      return returnManagedScript(
+        moved,
+        false,
+        false,
+        clearedThrough,
+        "mining failed at " .. step
+      )
+    end
+
+    if onProgress then
+      local callbackOk, saved, saveMessage = pcall(onProgress, step)
+
+      if not callbackOk or saved == false then
+        return returnManagedScript(
+          moved,
+          false,
+          false,
+          clearedThrough,
+          "could not checkpoint step " .. step .. ": "
+            .. tostring(callbackOk and saveMessage or saved)
+        )
+      end
+    end
+
+    clearedThrough = step
+  end
+
+  return returnManagedScript(
+    moved,
+    true,
+    true,
+    clearedThrough,
+    "lane target reached"
+  )
+end
+
 local function isScriptModeArg(value)
   return value == "script"
     or value == "--script"
@@ -548,6 +679,14 @@ end
 local function usage()
   print("Usage: dockmine [max-new-blocks] [fuel-margin] [script]")
   print("Mines a 1x2 tunnel from a fixed dock.")
+end
+
+if internalTask then
+  if internalTask.mode ~= "managed-lane" then
+    return managedScriptResult(false, false, 0, "unsupported internal task")
+  end
+
+  return runManagedScriptMode(internalTask)
 end
 
 if args[1] == "-h" or args[1] == "--help" then

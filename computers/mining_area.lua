@@ -4,11 +4,12 @@
 --   mining_area service [config-file]
 --   mining_area peripherals
 --   mining_area docks [config-file]
+--   mining_area progress [config-file]
 --   mining_area discover [config-file] [timeout-seconds]
 --   mining_area add-turtle [config-file]
 --
--- This runs on a normal computer. It schedules one dock mining job for each
--- configured turtle and services the fuel/output chests connected by modem.
+-- This runs on a normal computer. It schedules one resumable lane job at a
+-- time for each configured turtle and services fuel/output chests by modem.
 
 local args = { ... }
 
@@ -30,6 +31,7 @@ local DEFAULT_SERVICE_INTERVAL = 5
 local DEFAULT_STATUS_TIMEOUT = 45
 local DEFAULT_HEARTBEAT_INTERVAL = 3
 local DEFAULT_DOCK_REGISTRY = "mining_area_docks"
+local DEFAULT_LANE_CHECKPOINTS = "mining_area_lane_checkpoints"
 local DEFAULT_DISCOVERY_TIMEOUT = 3
 local PLACEHOLDER_CARDINAL_DIRECTION = "Awaiting-User-Input"
 
@@ -56,6 +58,7 @@ local function usage()
   print("  mining_area service [config-file]")
   print("  mining_area peripherals")
   print("  mining_area docks [config-file]")
+  print("  mining_area progress [config-file]")
   print("  mining_area discover [config-file] [timeout-seconds]")
   print("  mining_area add-turtle [config-file]")
 end
@@ -343,6 +346,7 @@ local function makeDefaultConfig(configPath)
     statusTimeout = DEFAULT_STATUS_TIMEOUT,
     heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL,
     dockRegistryFile = DEFAULT_DOCK_REGISTRY,
+    laneCheckpointFile = DEFAULT_LANE_CHECKPOINTS,
     docks = {},
   }
 end
@@ -440,6 +444,7 @@ local function loadConfig(path)
   end
 
   config.dockRegistryFile = config.dockRegistryFile or DEFAULT_DOCK_REGISTRY
+  config.laneCheckpointFile = config.laneCheckpointFile or DEFAULT_LANE_CHECKPOINTS
   config.docks = config.docks or {}
 
   return config
@@ -512,6 +517,91 @@ local function saveDockRegistry(config, registry)
   return true, path
 end
 
+local function laneCheckpointPath(config)
+  return config.laneCheckpointFile or DEFAULT_LANE_CHECKPOINTS
+end
+
+local function emptyLaneCheckpoints()
+  return {
+    version = 1,
+    lanes = {},
+  }
+end
+
+local function loadLaneCheckpoints(config)
+  local path = laneCheckpointPath(config)
+  local found = false
+  local candidates = {
+    path,
+    path .. ".tmp",
+    path .. ".bak",
+  }
+
+  for _, candidate in ipairs(candidates) do
+    if fs.exists(candidate) then
+      found = true
+
+      local file = fs.open(candidate, "r")
+
+      if file then
+        local content = file.readAll()
+        file.close()
+
+        local data = textutils.unserialize(content)
+
+        if type(data) == "table" and type(data.lanes) == "table" then
+          data.version = 1
+          return data, path
+        end
+      end
+    end
+  end
+
+  if not found then
+    return emptyLaneCheckpoints(), path
+  end
+
+  return nil, path, "lane checkpoints are unreadable: " .. path
+end
+
+local function saveLaneCheckpoints(config, checkpoints)
+  local path = laneCheckpointPath(config)
+  local tempPath = path .. ".tmp"
+  local backupPath = path .. ".bak"
+  local file = fs.open(tempPath, "w")
+
+  if not file then
+    return false, "could not write lane checkpoints: " .. tempPath
+  end
+
+  file.write(textutils.serialize(checkpoints))
+  file.close()
+
+  if fs.exists(backupPath) then
+    fs.delete(backupPath)
+  end
+
+  if fs.exists(path) then
+    fs.move(path, backupPath)
+  end
+
+  local moved, moveMessage = pcall(fs.move, tempPath, path)
+
+  if not moved then
+    if fs.exists(backupPath) and not fs.exists(path) then
+      fs.move(backupPath, path)
+    end
+
+    return false, "could not replace lane checkpoints: " .. tostring(moveMessage)
+  end
+
+  if fs.exists(backupPath) then
+    fs.delete(backupPath)
+  end
+
+  return true, path
+end
+
 local function normalizeDock(rawDock, source, fallbackKey, fallbackCardinalDirection, defaultEnabled)
   if type(rawDock) ~= "table" then
     return nil
@@ -524,7 +614,16 @@ local function normalizeDock(rawDock, source, fallbackKey, fallbackCardinalDirec
   end
 
   dock.source = source
-  dock.key = tostring(dock.key or dock.name or dock.label or fallbackKey or dock.turtleId or "dock")
+  dock.key = tostring(
+    dock.key
+      or dock.turtleId
+      or dock.rednetId
+      or dock.rednetAddress
+      or dock.name
+      or dock.label
+      or fallbackKey
+      or "dock"
+  )
   dock.label = dock.label or dock.computerLabel
   dock.turtleId = tonumber(dock.turtleId or dock.rednetId or dock.rednetAddress)
   dock.rednetId = tonumber(dock.rednetId or dock.rednetAddress or dock.turtleId)
@@ -778,6 +877,11 @@ local function validateDock(direction, dock, config)
 end
 
 local function validateConfig(config)
+  if type(config.laneCheckpointFile) ~= "string"
+    or config.laneCheckpointFile == "" then
+    return false, "laneCheckpointFile must be a file path"
+  end
+
   local fuelItems = configuredFuelItems(nil, config)
 
   if #fuelItems == 0 then
@@ -1068,52 +1172,124 @@ local function makeRunId()
   return tostring(os.getComputerID()) .. "-" .. tostring(nowSeconds())
 end
 
-local function makeJob(config, dock, targetDistance, runId)
+local function laneIdFor(config, dock, laneOffset)
+  local name = dockDisplayName(dock)
+  return config.areaId .. "/" .. tostring(dock.key or name)
+    .. "/lane/" .. tostring(laneOffset)
+end
+
+local function laneJobSuffix(laneOffset)
+  if laneOffset < 0 then
+    return "m" .. tostring(math.abs(laneOffset))
+  end
+
+  if laneOffset > 0 then
+    return "p" .. tostring(laneOffset)
+  end
+
+  return "0"
+end
+
+local function makeLaneJob(
+  config,
+  dock,
+  targetDistance,
+  runId,
+  laneOffset,
+  resumeFrom
+)
   local name = dockDisplayName(dock)
   local heading = dock.cardinalDirection or PLACEHOLDER_CARDINAL_DIRECTION
-  local leftLanes, rightLanes = configuredSideLanes(dock, config)
-  local task = "mine-distance"
-
-  if leftLanes > 0 or rightLanes > 0 then
-    task = "mine-area"
-  end
+  local laneId = laneIdFor(config, dock, laneOffset)
 
   return {
     type = "job",
-    jobId = config.areaId .. "-" .. name .. "-" .. runId,
-    task = task,
+    jobId = config.areaId .. "-" .. name .. "-" .. runId
+      .. "-lane-" .. laneJobSuffix(laneOffset),
+    task = "mine-lane",
     ao = dock.ao or name,
     heading = heading,
     turtleId = dock.turtleId,
     params = {
+      laneId = laneId,
       targetDistance = targetDistance,
       laneLength = targetDistance,
-      laneOffset = 0,
+      resumeFrom = resumeFrom,
+      laneOffset = laneOffset,
       laneWidth = 1,
       laneHeight = 2,
-      leftLanes = leftLanes,
-      rightLanes = rightLanes,
       fuelMargin = dock.fuelMargin or config.fuelMargin,
       heartbeatInterval = config.heartbeatInterval,
     },
   }
 end
 
-local function makeWorkers(config, targetDistance)
+local function laneOffsetsForDock(dock, config)
+  local leftLanes, rightLanes = configuredSideLanes(dock, config)
+  local offsets = { 0 }
+  local widest = math.max(leftLanes, rightLanes)
+
+  for distance = 1, widest do
+    if distance <= leftLanes then
+      offsets[#offsets + 1] = -distance
+    end
+
+    if distance <= rightLanes then
+      offsets[#offsets + 1] = distance
+    end
+  end
+
+  return offsets
+end
+
+local function makeWorkers(config, targetDistance, checkpoints)
   local workers = {}
   local runId = makeRunId()
 
   for _, dock in ipairs(config.activeDocks or {}) do
     local name = dockDisplayName(dock)
+    local jobs = {}
+
+    for _, laneOffset in ipairs(laneOffsetsForDock(dock, config)) do
+      local laneId = laneIdFor(config, dock, laneOffset)
+      local checkpoint = checkpoints.lanes[laneId] or {}
+      local clearedThrough = tonumber(checkpoint.clearedThrough) or 0
+
+      checkpoint.laneId = laneId
+      checkpoint.areaId = config.areaId
+      checkpoint.dockId = tostring(dock.key or name)
+      checkpoint.heading = dock.cardinalDirection
+      checkpoint.laneOffset = laneOffset
+      checkpoint.targetDistance = targetDistance
+      checkpoint.clearedThrough = clearedThrough
+      checkpoint.state = clearedThrough >= targetDistance and "complete" or "pending"
+      checkpoint.updatedAt = checkpoint.updatedAt or nowSeconds()
+      checkpoints.lanes[laneId] = checkpoint
+
+      if clearedThrough < targetDistance then
+        jobs[#jobs + 1] = makeLaneJob(
+          config,
+          dock,
+          targetDistance,
+          runId,
+          laneOffset,
+          clearedThrough
+        )
+      end
+    end
 
     workers[#workers + 1] = {
       direction = name,
       dock = dock,
       turtleId = dock.turtleId,
-      state = "queued",
-      job = makeJob(config, dock, targetDistance, runId),
+      state = #jobs > 0 and "queued" or "complete",
+      jobs = jobs,
+      jobIndex = 1,
+      job = jobs[1],
+      completedJobs = 0,
+      totalJobs = #jobs,
       lastSeen = nil,
-      lastMessage = "queued",
+      lastMessage = #jobs > 0 and "queued" or "all lanes already complete",
     }
   end
 
@@ -1153,17 +1329,20 @@ local function queryFuelReports(workers, config)
   local pendingCount = 0
 
   for _, worker in ipairs(workers) do
-    local query = makeFuelQuery(worker)
+    if worker.job then
+      local query = makeFuelQuery(worker)
 
-    worker.fuelQueryId = query.queryId
-    worker.state = "fuel-query"
-    worker.lastSent = nowSeconds()
-    worker.lastMessage = "fuel query sent"
-    pending[query.queryId] = worker
-    pendingCount = pendingCount + 1
+      worker.fuelQueryId = query.queryId
+      worker.state = "fuel-query"
+      worker.lastSent = nowSeconds()
+      worker.lastMessage = "fuel query sent"
+      pending[query.queryId] = worker
+      pendingCount = pendingCount + 1
 
-    print("Querying fuel for " .. worker.direction .. " turtle=" .. tostring(worker.turtleId))
-    rednet.send(worker.turtleId, query, config.protocol)
+      print("Querying fuel for " .. worker.direction
+        .. " turtle=" .. tostring(worker.turtleId))
+      rednet.send(worker.turtleId, query, config.protocol)
+    end
   end
 
   local timeout = tonumber(config.fuelQueryTimeout) or DEFAULT_FUEL_QUERY_TIMEOUT
@@ -1204,14 +1383,14 @@ local function queryFuelReports(workers, config)
         elseif message.type == "error" then
           local worker = workerForSender(workers, senderId, message)
 
-          handleStatus(workers, senderId, message)
-
           if worker and worker.fuelQueryId and pending[worker.fuelQueryId] then
+            worker.state = "failed"
+            worker.lastMessage = tostring(message.code or "error")
+              .. ": " .. tostring(message.message or "")
+            print(worker.direction .. ": failed: " .. worker.lastMessage)
             pending[worker.fuelQueryId] = nil
             pendingCount = pendingCount - 1
           end
-        elseif message.type == "turtle-status" then
-          handleStatus(workers, senderId, message)
         end
       end
     end
@@ -1244,60 +1423,55 @@ local function numericFuel(value)
   return tonumber(value)
 end
 
-local function sideRunFuelNeeded(depth, lanes, margin)
-  if lanes <= 0 then
-    return 0
-  end
-
-  local offset = 1
-  local sideStepsRemaining = lanes - 1
-  local sideStepsBackToDockLane = offset + lanes - 1
-
-  return offset
-    + lanes * depth * 2
-    + sideStepsRemaining
-    + sideStepsBackToDockLane
-    + margin
-end
-
 local function calculateJobFuelNeed(worker, report, config)
-  local params = worker.job.params or {}
-  local targetDistance = tonumber(params.targetDistance or params.laneLength)
-  local progress = tonumber(report.progress) or 0
   local fuelMargin = configuredFuelMargin(worker.dock, config)
-
-  if not targetDistance then
-    return nil, "job target distance is missing"
-  end
 
   if not fuelMargin or fuelMargin < 0 or fuelMargin ~= math.floor(fuelMargin) then
     return nil, "fuelMargin must be a non-negative whole number"
   end
 
-  local centerFuel = 0
+  local totalFuel = 0
+  local maxPhaseFuel = 0
+  local pendingJobs = 0
 
-  if progress < targetDistance then
-    centerFuel = targetDistance * 2 + fuelMargin + 2
-  end
+  for index = worker.jobIndex or 1, #(worker.jobs or {}) do
+    local job = worker.jobs[index]
+    local params = job.params or {}
+    local targetDistance = tonumber(params.targetDistance or params.laneLength)
+    local laneOffset = tonumber(params.laneOffset or 0) or 0
+    local progress = tonumber(params.resumeFrom) or 0
 
-  local leftLanes = tonumber(params.leftLanes) or 0
-  local rightLanes = tonumber(params.rightLanes) or 0
-  local leftFuel = 0
-  local rightFuel = 0
+    if not targetDistance then
+      return nil, "lane job target distance is missing"
+    end
 
-  if worker.job.task == "mine-area" then
-    leftFuel = sideRunFuelNeeded(targetDistance, leftLanes, fuelMargin)
-    rightFuel = sideRunFuelNeeded(targetDistance, rightLanes, fuelMargin)
+    if laneOffset == 0 then
+      progress = math.max(progress, tonumber(report.progress) or 0)
+      params.resumeFrom = progress
+    end
+
+    if progress < targetDistance then
+      local phaseFuel
+
+      if laneOffset == 0 then
+        phaseFuel = targetDistance * 2 + fuelMargin + 2
+      else
+        phaseFuel = targetDistance * 2
+          + math.abs(laneOffset) * 2
+          + fuelMargin
+      end
+
+      totalFuel = totalFuel + phaseFuel
+      maxPhaseFuel = math.max(maxPhaseFuel, phaseFuel)
+      pendingJobs = pendingJobs + 1
+    end
   end
 
   return {
-    totalFuel = centerFuel + leftFuel + rightFuel,
-    maxPhaseFuel = math.max(centerFuel, leftFuel, rightFuel),
-    targetDistance = targetDistance,
-    progress = progress,
-    centerFuel = centerFuel,
-    leftFuel = leftFuel,
-    rightFuel = rightFuel,
+    totalFuel = totalFuel,
+    maxPhaseFuel = maxPhaseFuel,
+    progress = tonumber(report.progress) or 0,
+    pendingJobs = pendingJobs,
   }
 end
 
@@ -1364,9 +1538,7 @@ local function calculateJobFuelPlan(worker, config)
     targetFuel = targetFuel,
     currentFuel = currentFuel,
     progress = need.progress,
-    centerFuel = need.centerFuel,
-    leftFuel = need.leftFuel,
-    rightFuel = need.rightFuel,
+    pendingJobs = need.pendingJobs,
     message = "needs " .. neededFuel .. " fuel units",
   }
 end
@@ -1473,34 +1645,38 @@ local function prepareJobFuel(workers, config)
   local allOk = true
 
   for _, worker in ipairs(workers) do
-    local plan, planMessage = calculateJobFuelPlan(worker, config)
-
-    if not plan then
-      worker.state = "failed"
-      worker.lastMessage = planMessage
-      print(worker.direction .. ": failed: " .. planMessage)
-      allOk = false
-    elseif (configuredFuelMaxItems(worker.dock, config) or 0) <= 0
-      or plan.message == "turtle fuel is unlimited" then
-      worker.lastMessage = plan.message
-      print(worker.direction .. ": " .. plan.message)
+    if not worker.job then
+      worker.lastMessage = "all lanes already complete"
     else
-      local ok, fuelMessage = reconcileDockFuel(
-        worker.direction,
-        worker.dock,
-        config,
-        plan.neededFuel
-      )
+      local plan, planMessage = calculateJobFuelPlan(worker, config)
 
-      worker.lastMessage = fuelMessage
-
-      if ok then
-        print(worker.direction .. ": " .. fuelMessage
-          .. " (" .. tostring(plan.neededFuel) .. " fuel units needed)")
-      else
+      if not plan then
         worker.state = "failed"
-        print(worker.direction .. ": failed: " .. fuelMessage)
+        worker.lastMessage = planMessage
+        print(worker.direction .. ": failed: " .. planMessage)
         allOk = false
+      elseif (configuredFuelMaxItems(worker.dock, config) or 0) <= 0
+        or plan.message == "turtle fuel is unlimited" then
+        worker.lastMessage = plan.message
+        print(worker.direction .. ": " .. plan.message)
+      else
+        local ok, fuelMessage = reconcileDockFuel(
+          worker.direction,
+          worker.dock,
+          config,
+          plan.neededFuel
+        )
+
+        worker.lastMessage = fuelMessage
+
+        if ok then
+          print(worker.direction .. ": " .. fuelMessage
+            .. " (" .. tostring(plan.neededFuel) .. " fuel units needed)")
+        else
+          worker.state = "failed"
+          print(worker.direction .. ": failed: " .. fuelMessage)
+          allOk = false
+        end
       end
     end
   end
@@ -1508,17 +1684,110 @@ local function prepareJobFuel(workers, config)
   return allOk
 end
 
+local function sendCurrentJob(worker, protocol)
+  if not worker.job then
+    worker.state = "complete"
+    worker.lastMessage = "all queued lanes complete"
+    return
+  end
+
+  local params = worker.job.params or {}
+
+  print(worker.direction
+    .. ": starting lane " .. tostring(params.laneOffset)
+    .. " from " .. tostring(params.resumeFrom or 0)
+    .. "/" .. tostring(params.targetDistance))
+  rednet.send(worker.turtleId, worker.job, protocol)
+  worker.state = "sent"
+  worker.lastSent = nowSeconds()
+  worker.lastMessage = "lane job sent"
+  worker.lastPrintedMessage = nil
+end
+
 local function sendJobs(workers, protocol)
   for _, worker in ipairs(workers) do
-    print("Sending " .. worker.job.jobId .. " to turtle " .. worker.turtleId)
-    rednet.send(worker.turtleId, worker.job, protocol)
-    worker.state = "sent"
-    worker.lastSent = nowSeconds()
-    worker.lastMessage = "job sent"
+    if worker.job then
+      sendCurrentJob(worker, protocol)
+    end
   end
 end
 
-function handleStatus(workers, senderId, message)
+local function recordLaneCheckpoint(config, checkpoints, worker, message)
+  if not config or not checkpoints or not worker.job then
+    return true
+  end
+
+  local params = worker.job.params or {}
+  local laneId = message.laneId
+  local expectedLaneId = params.laneId
+
+  if type(laneId) ~= "string" or laneId ~= expectedLaneId then
+    return false, "status laneId does not match active job"
+  end
+
+  local clearedThrough = tonumber(message.clearedThrough)
+  local targetDistance = tonumber(params.targetDistance)
+
+  if not clearedThrough
+    or clearedThrough < 0
+    or clearedThrough ~= math.floor(clearedThrough)
+    or clearedThrough > targetDistance then
+    return false, "invalid lane checkpoint " .. tostring(message.clearedThrough)
+  end
+
+  local entry = checkpoints.lanes[laneId] or {
+    laneId = laneId,
+    areaId = config.areaId,
+    dockId = tostring(worker.dock.key or worker.direction),
+    laneOffset = params.laneOffset,
+    targetDistance = targetDistance,
+    clearedThrough = 0,
+  }
+  local previous = tonumber(entry.clearedThrough) or 0
+  local changed = false
+
+  if clearedThrough > previous then
+    entry.clearedThrough = clearedThrough
+    changed = true
+  end
+
+  local nextState = entry.state
+
+  if message.type == "error" or message.status == "failed" then
+    nextState = "failed"
+  elseif message.status == "complete" and entry.clearedThrough >= targetDistance then
+    nextState = "complete"
+  elseif entry.clearedThrough < targetDistance then
+    nextState = "in-progress"
+  end
+
+  if entry.state ~= nextState then
+    entry.state = nextState
+    changed = true
+  end
+
+  entry.jobId = worker.job.jobId
+  entry.assignedTurtleId = worker.turtleId
+  entry.targetDistance = targetDistance
+
+  if changed then
+    entry.updatedAt = nowSeconds()
+    checkpoints.lanes[laneId] = entry
+
+    local saved, saveMessage = saveLaneCheckpoints(config, checkpoints)
+
+    if not saved then
+      return false, saveMessage
+    end
+  else
+    checkpoints.lanes[laneId] = entry
+  end
+
+  params.resumeFrom = math.max(tonumber(params.resumeFrom) or 0, entry.clearedThrough)
+  return true
+end
+
+function handleStatus(workers, senderId, message, config, checkpoints)
   if type(message) ~= "table" then
     return
   end
@@ -1534,7 +1803,27 @@ function handleStatus(workers, senderId, message)
     return
   end
 
+  if worker.job
+    and message.jobId
+    and message.jobId ~= worker.job.jobId then
+    return
+  end
+
   worker.lastSeen = nowSeconds()
+
+  local checkpointOk, checkpointMessage = recordLaneCheckpoint(
+    config,
+    checkpoints,
+    worker,
+    message
+  )
+
+  if not checkpointOk then
+    worker.state = "failed"
+    worker.lastMessage = checkpointMessage
+    print(worker.direction .. ": failed: " .. checkpointMessage)
+    return
+  end
 
   if message.type == "error" then
     worker.state = "failed"
@@ -1549,14 +1838,63 @@ function handleStatus(workers, senderId, message)
   end
 
   worker.state = message.status or worker.state
-  worker.progress = message.progress
+  worker.progress = message.clearedThrough or message.progress
   worker.fuel = message.fuel
   worker.lastMessage = message.message or worker.state
 
-  print(worker.direction .. ": " .. worker.state
-    .. " progress=" .. tostring(worker.progress)
-    .. " fuel=" .. tostring(worker.fuel)
-    .. " " .. tostring(worker.lastMessage))
+  if message.status == "complete" then
+    local finishedJob = worker.job
+    local params = finishedJob and finishedJob.params or {}
+    local targetDistance = tonumber(params.targetDistance)
+    local clearedThrough = tonumber(message.clearedThrough) or 0
+
+    if not targetDistance or clearedThrough < targetDistance then
+      worker.state = "failed"
+      worker.lastMessage = "lane completion reported below target"
+      print(worker.direction .. ": failed: " .. worker.lastMessage)
+      return
+    end
+
+    worker.completedJobs = worker.completedJobs + 1
+    print(worker.direction
+      .. ": lane " .. tostring(params.laneOffset)
+      .. " complete (" .. worker.completedJobs .. "/" .. worker.totalJobs .. ")")
+
+    worker.jobIndex = worker.jobIndex + 1
+    worker.job = worker.jobs[worker.jobIndex]
+
+    if not worker.job then
+      worker.state = "complete"
+      worker.lastMessage = "all queued lanes complete"
+      return
+    end
+
+    local outputOk, outputMessage = serviceDock(
+      worker.direction,
+      worker.dock,
+      config
+    )
+
+    if not outputOk then
+      worker.state = "failed"
+      worker.lastMessage = outputMessage
+      return
+    end
+
+    local nextEntry = checkpoints.lanes[worker.job.params.laneId]
+
+    if nextEntry then
+      worker.job.params.resumeFrom = tonumber(nextEntry.clearedThrough) or 0
+    end
+
+    sendCurrentJob(worker, config.protocol)
+  elseif message.status == "running"
+    and type(message.message) == "string"
+    and string.sub(message.message, 1, 7) == "mining "
+    and worker.lastPrintedMessage ~= message.message then
+    worker.lastPrintedMessage = message.message
+    print(worker.direction .. ": " .. message.message)
+  end
 end
 
 local function checkTimeouts(workers, timeout)
@@ -1597,9 +1935,56 @@ local function printSummary(workers)
     print("  " .. worker.direction
       .. " turtle=" .. tostring(worker.turtleId)
       .. " state=" .. tostring(worker.state)
+      .. " lanes=" .. tostring(worker.completedJobs or 0)
+      .. "/" .. tostring(worker.totalJobs or 0)
       .. " progress=" .. tostring(worker.progress or "?")
       .. " message=" .. tostring(worker.lastMessage))
   end
+end
+
+local function printLaneProgress(config)
+  local checkpoints, path, checkpointMessage = loadLaneCheckpoints(config)
+
+  if not checkpoints then
+    print(checkpointMessage)
+    return false
+  end
+
+  local lanes = {}
+
+  for _, lane in pairs(checkpoints.lanes) do
+    if lane.areaId == config.areaId then
+      lanes[#lanes + 1] = lane
+    end
+  end
+
+  table.sort(lanes, function(left, right)
+    local leftDock = tostring(left.dockId or "")
+    local rightDock = tostring(right.dockId or "")
+
+    if leftDock == rightDock then
+      return (tonumber(left.laneOffset) or 0) < (tonumber(right.laneOffset) or 0)
+    end
+
+    return leftDock < rightDock
+  end)
+
+  print("Lane checkpoints: " .. path)
+
+  if #lanes == 0 then
+    print("No lane checkpoints for " .. config.areaId .. ".")
+    return true
+  end
+
+  for _, lane in ipairs(lanes) do
+    print(tostring(lane.dockId)
+      .. " lane=" .. tostring(lane.laneOffset)
+      .. " " .. tostring(lane.clearedThrough or 0)
+      .. "/" .. tostring(lane.targetDistance or "?")
+      .. " " .. tostring(lane.state or "unknown"))
+  end
+
+  return true
 end
 
 local function findRegistryDock(registry, turtleId)
@@ -1892,6 +2277,7 @@ local function runMiningArea(config, targetDistance)
   print("Storage: " .. formatList(configuredStorageTargets(nil, config)))
   print("Default side lanes: left=" .. tostring(config.leftLanes)
     .. " right=" .. tostring(config.rightLanes))
+  print("Lane checkpoints: " .. laneCheckpointPath(config))
   print("")
 
   print("Initial dock service")
@@ -1900,7 +2286,20 @@ local function runMiningArea(config, targetDistance)
     return false
   end
 
-  local workers = makeWorkers(config, targetDistance)
+  local checkpoints, _, checkpointMessage = loadLaneCheckpoints(config)
+
+  if not checkpoints then
+    print(checkpointMessage)
+    return false
+  end
+
+  local workers = makeWorkers(config, targetDistance, checkpoints)
+  local checkpointsSaved, saveMessage = saveLaneCheckpoints(config, checkpoints)
+
+  if not checkpointsSaved then
+    print(saveMessage)
+    return false
+  end
 
   print("Initial fuel query")
   if not queryFuelReports(workers, config) then
@@ -1930,7 +2329,7 @@ local function runMiningArea(config, targetDistance)
       local protocol = event[4]
 
       if protocol == config.protocol then
-        handleStatus(workers, senderId, message)
+        handleStatus(workers, senderId, message, config, checkpoints)
       end
     elseif event[1] == "timer" and event[2] == serviceTimer then
       serviceAll(config)
@@ -1977,6 +2376,18 @@ local function main()
     local config = loadConfigOrDefault(configPath)
 
     return listDocks(config)
+  end
+
+  if command == "progress" then
+    local configPath = args[2] or DEFAULT_CONFIG
+    local config, configError = loadConfig(configPath)
+
+    if not config then
+      print(configError)
+      return false
+    end
+
+    return printLaneProgress(config)
   end
 
   if command == "discover" then
