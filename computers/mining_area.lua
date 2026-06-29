@@ -79,6 +79,10 @@ local function nowSeconds()
   return math.floor(os.clock())
 end
 
+local function timestamp()
+  return "[" .. os.date("%H:%M") .. "]"
+end
+
 local function formatList(values)
   local out = ""
 
@@ -1693,7 +1697,7 @@ local function sendCurrentJob(worker, protocol)
 
   local params = worker.job.params or {}
 
-  print(worker.direction
+  print(timestamp() .. " " .. worker.direction
     .. ": starting lane " .. tostring(params.laneOffset)
     .. " from " .. tostring(params.resumeFrom or 0)
     .. "/" .. tostring(params.targetDistance))
@@ -1856,7 +1860,7 @@ function handleStatus(workers, senderId, message, config, checkpoints)
     end
 
     worker.completedJobs = worker.completedJobs + 1
-    print(worker.direction
+    print(timestamp() .. " " .. worker.direction
       .. ": lane " .. tostring(params.laneOffset)
       .. " complete (" .. worker.completedJobs .. "/" .. worker.totalJobs .. ")")
 

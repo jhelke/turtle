@@ -204,6 +204,9 @@ _G.os = {
   epoch = function()
     return 1000000
   end,
+  date = function()
+    return "23:12"
+  end,
   clock = hostClock,
   startTimer = function()
     timerId = timerId + 1
